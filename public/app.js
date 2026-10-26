@@ -5,6 +5,7 @@ const { CONFIG: FACE, ENROLL_STEPS, facePose, Verifier, Enroller, findDuplicate,
 const MAX_SAMPLES = ENROLL_STEPS.length;
 const { SORTS, DEFAULT_SORT, sortRows } = ReportSort;   // sắp xếp Bảng công (sort.js)
 const { SHIFTS, suggestShift, shiftLabel, shiftDateFor, isMissed } = Shifts;     // ca làm việc (shifts.js)
+const { retryDelay, isRetryable, describeError } = Retry;                        // gửi lại lượt chờ (retry.js)
 const shiftOf = l => SHIFTS[l?.shift] ? l.shift : 'sang'; // lượt cũ (trước khi có ca) tính là ca sáng
 const dmyhm = ts => { const d = new Date(ts); return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 // Vị trí lưu trong bảng công: "lat,lng,sai số" (GPS) hoặc "net:Thành phố, Quốc gia" (theo mạng)
@@ -80,12 +81,21 @@ function updateNet() {
   $('netChip').classList.toggle('off', !on);
   $('netChip').lastChild.textContent = on ? 'Trực tuyến' : 'Mất mạng';
 }
-addEventListener('online', () => { updateNet(); flushQueue(); });
+addEventListener('online', () => { updateNet(); flushQueue(true); });   // có mạng lại: thử ngay, không chờ giờ hẹn
 addEventListener('offline', updateNet);
 updateNet();
 
 // ---------------- API ----------------
 class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
+const statusOf = e => e instanceof HttpError ? e.status : 0;   // 0 = không tới được server (mất mạng)
+class QueuedBehind extends Error {}   // còn lượt cũ chưa gửi được: lượt mới phải xếp hàng sau để giữ thứ tự vào/ra
+// Khoá nút trong lúc gửi để bấm nhiều lần không gửi nhiều lần
+async function busy(btn, fn, label = 'Đang gửi…') {
+  if (btn.disabled) return;
+  const html = btn.innerHTML;
+  btn.disabled = true; btn.textContent = label;
+  try { return await fn(); } finally { btn.disabled = false; btn.innerHTML = html; }
+}
 async function api(path, opts = {}) {
   const headers = { 'X-Access-Code': store.get('ts.accessCode') || '', ...(opts.headers || {}) };
   const r = await fetch(path, { ...opts, headers });
@@ -135,24 +145,32 @@ async function sendPunch(item) {
 }
 
 let flushing = false;
-async function flushQueue() {
+async function flushQueue(force) {
   if (flushing || !qdb) return;
   flushing = true;
   let sent = 0;
   try {
     for (const item of (await queueAll()).sort((a, b) => a.ts - b.ts)) {
+      // giữ đúng thứ tự vào/ra: lượt trước chưa tới giờ thử lại thì các lượt sau cũng chờ
+      if (!force && item.nextAt > Date.now()) break;
       try {
         await sendPunch(item); sent++;
       } catch (e) {
-        if (!(e instanceof HttpError) || e.status >= 500) break; // mất mạng / lỗi server: thử lại sau
+        if (isRetryable(statusOf(e))) {
+          // mất mạng, server lỗi, bị giới hạn: giữ lượt, thử lại giãn dần (30 giây, 1, 2, 4… tối đa 15 phút)
+          const tries = (item.tries || 0) + 1;
+          await qtx('readwrite', s => s.put({ ...item, tries, nextAt: Date.now() + retryDelay(tries), lastError: describeError(statusOf(e), e.message) }));
+          break;
+        }
         toast(`Bỏ lượt chấm công chờ gửi của ${item.name}: ${e.message}`, 'warn', 6000);
       }
       await qtx('readwrite', s => s.delete(item.ts));
     }
   } finally {
     flushing = false;
-    if (sent) toast(`Đã gửi ${sent} lượt chấm công lên Telegram`, 'ok');
-    await loadToday();
+    // chỉ làm mới khi đã gửi được: vòng 30 giây này chạy cả khi hàng đợi trống và tab bị ẩn (mỗi lần tải bảng công tốn lệnh list KV)
+    if (sent) { toast(`Đã gửi ${sent} lượt chấm công lên Telegram`, 'ok'); await loadToday(); }
+    else await renderQueue();
   }
 }
 setInterval(flushQueue, 30000);
@@ -180,6 +198,7 @@ async function loadMe() {
   applyRole();
 }
 function applyRole() {
+  document.body.classList.toggle('solo', !isAdmin());   // nhân viên chỉ có màn chấm công: điện thoại ẩn thanh điều hướng
   document.querySelectorAll('[data-admin]').forEach(el => el.hidden = !isAdmin());
   $('whoChip').hidden = $('btnLogout').hidden = !me;
   $('whoChip').textContent = me ? me.name + (isAdmin() ? ' (quản trị)' : '') : '';
@@ -403,7 +422,8 @@ function renderPerson() {
   if (me.root) return head(emptyAvatar, 'Tài khoản quản trị gốc', 'Tài khoản này chỉ dùng để quản lý, không chấm công. Muốn chấm công, đăng nhập bằng mã của nhân viên.');
   if (!me.descriptors?.length) return head(avatar(me), esc(me.name), 'Tài khoản chưa có khuôn mặt. Nhờ quản trị viên đăng ký khuôn mặt cho bạn.');
   if (current) return head(avatar(me), esc(me.name), `Đã xác minh khuôn mặt`);
-  if (faceState === 'live') return head(avatar(me), esc(me.name), 'Đã nhận ra bạn. Quay nhẹ đầu sang một bên để xác nhận là người thật.');
+  // lời nhắc quay đầu đã hiện ngay trên khung camera (nơi người dùng đang nhìn), ở đây không lặp lại
+  if (faceState === 'live') return head(avatar(me), esc(me.name), 'Đã nhận ra bạn, còn bước xác nhận người thật.');
   if (faceState === 'unknown') return head(avatar(me), esc(me.name), `Khuôn mặt trước camera không khớp với ${esc(me.name)}. Nhìn thẳng vào camera, đủ ánh sáng.`);
   head(avatar(me), esc(me.name), 'Nhìn vào camera để xác minh khuôn mặt.');
 }
@@ -520,14 +540,37 @@ let todayLogs = [];
 let pending = [];
 async function loadToday() {
   // quản trị: bảng công hôm nay và hôm qua (ca tối đang làm qua nửa đêm); nhân viên: chỉ cần ca đang mở
-  if (isAdmin()) { try { todayLogs = await api(`/api/logs?from=${ymd(addDays(new Date(), -1))}&to=${ymd(new Date())}`); } catch {} }
-  if (me && !me.root) { try { ({ open: openShift, last: lastShift } = await api('/api/status')); } catch {} }
-  pending = qdb ? await queueAll() : [];
+  const errs = [];
+  // Bảng công "Hôm nay" chỉ tải khi đang mở (mỗi lần tốn 1–2 lệnh list KV).
+  // Ngày hôm qua chỉ cần trước 12:00, lúc ca tối hôm qua còn mở.
+  if (isAdmin() && todayOpen()) {
+    const now = new Date(), from = now.getHours() < 12 ? ymd(addDays(now, -1)) : ymd(now);
+    try { todayLogs = await api(`/api/logs?from=${from}&to=${ymd(now)}`); }
+    catch (e) { errs.push('bảng công hôm nay: ' + describeError(statusOf(e), e.message)); }
+  }
+  if (me && !me.root) {
+    try { ({ open: openShift, last: lastShift } = await api('/api/status')); }
+    catch (e) { errs.push('trạng thái ca: ' + describeError(statusOf(e), e.message)); }
+  }
+  showSyncWarn(errs);
+  await renderQueue();
   renderShift();
-  const chip = $('queueChip');
-  chip.hidden = !pending.length;
-  chip.textContent = `${pending.length} lượt chờ gửi`;
   renderToday(); updatePunch();
+}
+const todayOpen = () => view === 'report' && !$('r-today').hidden;
+// Không tải được dữ liệu từ server thì nói rõ, vì nút Check-in/Check-out có thể chưa đúng
+function showSyncWarn(errs) {
+  $('syncWarn').hidden = !errs.length;
+  $('syncWarn').firstChild.textContent = errs.length ? `Chưa cập nhật được ${errs.join('; ')}. Nút chấm công có thể chưa đúng. ` : '';
+}
+$('btnSyncRetry').onclick = () => busy($('btnSyncRetry'), loadToday, 'Đang tải…');
+// Ô "lượt chờ gửi": số lượt, lý do lần gửi trước lỗi và giờ thử lại
+async function renderQueue() {
+  pending = qdb ? await queueAll() : [];
+  const chip = $('queueChip'), first = [...pending].sort((a, b) => a.ts - b.ts)[0];
+  chip.hidden = !pending.length;
+  chip.textContent = `${pending.length} lượt chờ gửi` + (first?.lastError ? ` · ${first.lastError}, thử lại lúc ${hms(new Date(first.nextAt)).slice(0, 5)}` : '');
+  chip.title = chip.textContent;
 }
 // tự làm mới 5 phút/lần khi app đang mở trên màn hình, và ngay khi quay lại app (đỡ tốn lượt đọc của gói miễn phí)
 setInterval(() => { if (document.visibilityState === 'visible') loadToday(); }, 5 * 60000);
@@ -600,6 +643,12 @@ async function punch() {
       shift: type === 'in' ? shift : undefined, geo: geoFresh() ? { lat: geo.lat, lng: geo.lng, acc: geo.acc } : undefined,
     };
     try {
+      // còn lượt chờ gửi trên máy: gửi chúng trước để server nhận đúng thứ tự vào/ra
+      if (qdb && (await queueAll()).length) {
+        await flushQueue(true);
+        const left = await queueAll();
+        if (left.length) throw new QueuedBehind(left[0].lastError || 'Lượt trước trên máy này chưa gửi được');
+      }
       await sendPunch(item);
       beep(true);
       const outNo = type === 'out' ? (open.outs || 0) + 1 : 0;
@@ -611,10 +660,17 @@ async function punch() {
       if (type === 'in') lastShift = { shift, shiftDate: shiftDateFor(shift, ymd(when), when.getHours()) };
       chosenByUser = false;
     } catch (e) {
-      if (e instanceof HttpError && e.status < 500) { beep(false); showStamp('error', emp, when, '', e.message); return; }
-      await qtx('readwrite', s => s.put(item));
+      const behind = e instanceof QueuedBehind, status = statusOf(e);
+      // bị từ chối (vd đã check-in) hoặc bấm quá nhanh (429): báo ngay, không lưu để gửi lại
+      if (!behind && status && status < 500) { beep(false); showStamp('error', emp, when, '', e.message); return; }
+      await qtx('readwrite', s => s.put({ ...item, tries: behind ? 0 : 1, nextAt: behind ? 0 : Date.now() + retryDelay(1), lastError: behind ? e.message : describeError(status, e.message) }));
       beep(true);
-      showStamp('queued', emp, when, `${type === 'in' ? 'Check-in' : 'Check-out'} sẽ tự gửi lên Telegram khi có mạng`);
+      const what = type === 'in' ? 'Check-in' : 'Check-out';
+      showStamp('queued', emp, when, behind
+        ? `Lượt trước trên máy này chưa gửi được (${e.message}). ${what} đã lưu, sẽ tự gửi ngay sau lượt đó; không cần bấm lại.`
+        : status
+        ? `Server đang lỗi. ${what} đã lưu trên máy, sẽ tự gửi lại; không cần bấm lại.`
+        : `${what} sẽ tự gửi lên Telegram khi có mạng; không cần bấm lại.`);
     }
     cooldown = { code: emp.code, until: Date.now() + 6000 };
     setTimeout(updatePunch, 6100);
@@ -1124,22 +1180,22 @@ $('btnSaveEmp').onclick = async () => {
 $('btnDeleteEmp').onclick = async () => {
   const code = enroll.editing, emp = employees.find(e => e.code === code);
   if (!confirm(`Xoá nhân viên ${emp.name}? Lịch sử chấm công vẫn được giữ.`)) return;
-  try {
+  await busy($('btnDeleteEmp'), async () => { try {
     await api('/api/employees?code=' + encodeURIComponent(code), { method: 'DELETE' });
     toast(`Đã xoá nhân viên ${emp.name}`, 'ok');
     $('enrollDlg').close();
     await loadEmployees();
-  } catch (e) { toast(e.message, 'err', 6000); }
+  } catch (e) { toast(e.message, 'err', 6000); } }, 'Đang xoá…');
 };
 $('btnNewCode').onclick = async () => {
   const emp = employees.find(e => e.code === enroll.editing);
   if (emp.hasKey && !confirm(`Tạo mã mới cho ${emp.name}? Mã cũ sẽ hết hiệu lực, máy đang dùng mã cũ phải nhập lại mã mới.`)) return;
-  try {
+  await busy($('btnNewCode'), async () => { try {
     const r = await api('/api/employees/code?code=' + encodeURIComponent(emp.code), { method: 'POST' });
     $('enrollDlg').close();
     showCode(emp.name, r.accessCode);
     await loadEmployees();
-  } catch (e) { toast(e.message, 'err', 6000); }
+  } catch (e) { toast(e.message, 'err', 6000); } }, 'Đang tạo…');
 };
 function showCode(name, code) {
   $('codeFor').textContent = `Mã kích hoạt của ${name}`;
@@ -1150,16 +1206,16 @@ $('btnCopyCode').onclick = async () => {
   try { await navigator.clipboard.writeText($('codeValue').textContent); toast('Đã sao chép mã', 'ok'); }
   catch { getSelection().selectAllChildren($('codeValue')); toast('Bấm giữ để sao chép mã', 'info'); }
 };
-$('btnSetup').onclick = async () => {
+$('btnSetup').onclick = () => busy($('btnSetup'), async () => {
   try {
     const r = await api('/api/setup', { method: 'POST' });
     toast(`Đã kết nối bot @${r.bot}` + (r.chat ? '' : '. Còn thiếu id group: gõ /chatid trong group để lấy.'), r.chat ? 'ok' : 'warn', 7000);
   } catch (e) { toast(e.message, 'err', 6000); }
-};
-$('btnReport').onclick = async () => {
+}, 'Đang kết nối…');
+$('btnReport').onclick = () => busy($('btnReport'), async () => {
   try { await api('/api/report-now', { method: 'POST' }); toast('Đã gửi tổng hợp vào group Telegram', 'ok'); }
   catch (e) { toast(e.message, 'err', 6000); }
-};
+});
 
 // ---------------- Kích hoạt bằng mã riêng ----------------
 function openOnboarding(err) {
@@ -1173,14 +1229,19 @@ $('onboardDlg').addEventListener('cancel', e => { if (!store.get('ts.accessCode'
 $('onboardForm').onsubmit = async e => {
   e.preventDefault();
   const key = $('onboardKey').value.trim();
-  try {
-    const r = await fetch('/api/me', { headers: { 'X-Access-Code': key } });
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) return openOnboarding(r.status === 401 ? 'Mã kích hoạt không đúng. Kiểm tra lại với quản trị viên.' : data.error || 'Không kích hoạt được, thử lại sau.');
-    me = data;
-  } catch {
-    return openOnboarding('Không có mạng. Kết nối mạng rồi thử lại.');
-  }
+  const ok = await busy($('btnActivate'), async () => {
+    try {
+      const r = await fetch('/api/me', { headers: { 'X-Access-Code': key } });
+      const data = await r.json().catch(() => ({}));
+      // 429: nhập sai quá nhiều lần, server báo phải chờ bao lâu
+      if (!r.ok) return openOnboarding(r.status === 401 ? 'Mã kích hoạt không đúng. Kiểm tra lại với quản trị viên.' : describeError(r.status, data.error) || 'Không kích hoạt được, thử lại sau.');
+      me = data;
+      return true;
+    } catch {
+      return openOnboarding('Không có mạng. Kết nối mạng rồi thử lại.');
+    }
+  }, 'Đang kiểm tra…');
+  if (!ok) return;
   store.set('ts.accessCode', key);
   store.set('ts.me', JSON.stringify(me));
   $('onboardDlg').close();
@@ -1198,6 +1259,7 @@ function showView(v) {
   document.querySelectorAll('.nav button').forEach(b => b.dataset.view === v ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current'));
   for (const id of ['kiosk', 'report', 'admin']) $('view-' + id).hidden = id !== v;
   if (v === 'report' && !$('r-history').hidden) loadHistory();
+  if (v === 'report' && !$('r-today').hidden) loadToday();   // Bảng công hôm nay chỉ tải khi mở
   if (location.hash.slice(1) !== v) history.replaceState(null, '', '#' + v);
   scrollTo(0, 0);
 }
@@ -1209,6 +1271,7 @@ document.querySelector('.toggle').onclick = e => {
   $('r-today').hidden = b.dataset.rtab !== 'today';
   $('r-history').hidden = b.dataset.rtab !== 'history';
   if (b.dataset.rtab === 'history') loadHistory();
+  else loadToday();
 };
 
 // ---------------- PWA ----------------

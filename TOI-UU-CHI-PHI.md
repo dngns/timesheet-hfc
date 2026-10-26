@@ -32,6 +32,15 @@ Server dùng `KV.list` mỗi khi cần biết hôm nay ai đã chấm công (`lo
 2. Xoá cache của ngày đó ngay sau khi ghi một lượt chấm công mới, để dữ liệu luôn đúng.
 3. Ngày đã qua không còn thay đổi nên có thể cache lâu hơn (vài giờ). Xem bảng công một tháng sẽ gần như không tốn lệnh liệt kê.
 
+**Cập nhật 2026-10-26 (đo trên Observability):** hạn mức vẫn bị vượt.
+- Cache API **không có tác dụng trên `*.workers.dev`** (chỉ chạy khi gắn domain riêng), nên các bước 1–3 ở trên không giảm được lệnh list nào.
+- Thủ phạm chính: hàng đợi offline chạy 30 giây/lần và luôn tải lại bảng công, kể cả khi trống và tab bị ẩn. Một tab quản trị tốn khoảng 4 lệnh list/phút; 3 giờ là hết 1.000.
+- Đã sửa:
+  - Hàng đợi chỉ làm mới khi gửi được lượt nào.
+  - Ngày đã khoá (12:00 trưa hôm sau + 24 giờ cho lượt gửi trễ) lưu thành key `day:<ngày>`, đọc bằng `get`.
+  - Ngày đã khoá chưa có ảnh chụp thì list theo tháng: bảng công một tháng tốn 1–2 lệnh lần đầu, 0 lệnh những lần sau. Mỗi ngày tốn thêm 1 lần ghi khi chụp.
+  - Hết hạn mức list thì vẫn chấm công được.
+
 ## Điểm nghẽn 2: tốc độ gửi tin của Telegram
 
 Telegram cho phép bot gửi khoảng 20 tin/phút vào một group. Nếu 30 người check-in trong cùng một phút, các lượt cuối nhận lỗi `429 Too Many Requests`.

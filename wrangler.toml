@@ -31,3 +31,25 @@ HOLIDAYS = ""                       # ngày lễ không nhắc/tổng hợp, cá
 #   ADMIN_KEY       mã tài khoản quản trị gốc (tạo nhân viên lần đầu, không chấm công)
 # Nhân viên đăng nhập bằng mã kích hoạt riêng do quản trị viên tạo trong app.
 #   WEBHOOK_SECRET  chuỗi ngẫu nhiên bảo vệ webhook Telegram
+
+# Giới hạn tần suất chống spam (Workers Rate Limiting, không tốn KV). period chỉ được 10 hoặc 60 giây.
+# namespace_id: số tự chọn, khác nhau giữa các bộ đếm.
+[[ratelimits]]
+name = "RL_IP"          # mọi yêu cầu /api từ một IP (văn phòng dùng chung một IP nên để rộng)
+namespace_id = "1001"
+simple = { limit = 300, period = 60 }
+
+[[ratelimits]]
+name = "RL_AUTH"        # nhập sai mã kích hoạt, theo IP
+namespace_id = "1002"
+simple = { limit = 10, period = 60 }
+
+[[ratelimits]]
+name = "RL_PUNCH"       # chấm công, theo mã NV
+namespace_id = "1003"
+simple = { limit = 6, period = 60 }
+
+[[ratelimits]]
+name = "RL_ACTION"      # gửi tổng hợp ngay, kết nối bot
+namespace_id = "1004"
+simple = { limit = 1, period = 60 }

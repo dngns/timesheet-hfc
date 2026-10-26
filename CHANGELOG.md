@@ -2,6 +2,73 @@
 
 Mỗi lần thay đổi đều ghi vào đây, mới nhất ở trên. Ghi kèm phiên bản Cloudflare nếu đã deploy.
 
+## 2026-10-26: Chống spam, chống gửi ảnh lặp, báo lỗi rõ ràng
+
+Đã deploy: phiên bản `258135c6-aa9f-4fe8-86fa-d1488cc164cb` (2026-10-26).
+
+### Sửa lỗi
+- **Ghi KV lỗi sau khi đã gửi ảnh thì group nhận ảnh lặp mãi.**
+  - Nguyên nhân: server gửi ảnh lên Telegram trước rồi mới ghi KV. Ghi lỗi (vd hết 1.000 lần ghi/ngày) thì trả 500, app gửi lại mỗi 30 giây, mỗi lần thêm một ảnh.
+  - Cách sửa: ghi trạng thái ca **trước** khi gửi ảnh; ghi lỗi thì dừng, chưa có ảnh nào. Gửi ảnh lỗi thì trả lại trạng thái cũ. Lượt đã ghi trạng thái mà thiếu bản ghi (lỗi giữa chừng) thì lần gửi lại bổ sung bản ghi, sau đó không gửi thêm ảnh.
+- **Lỗi server bị báo là mất mạng.** App hiện "sẽ gửi khi có mạng" dù mạng bình thường. Giờ báo "Server đang lỗi. … đã lưu trên máy, sẽ tự gửi lại; không cần bấm lại."
+- **Hàng đợi thử lại 30 giây/lần mãi mãi, và bỏ lượt khi bị 429.** Giờ thử lại giãn dần: 30 giây, 1, 2, 4, 8 phút, tối đa 15 phút; có mạng lại thì thử ngay. Bị giới hạn tần suất (429) thì giữ lượt. Ô "lượt chờ gửi" ghi lý do lỗi và giờ thử lại.
+- **Không tải được trạng thái ca thì app im lặng**, có thể hiện sai nút Check-in/Check-out. Giờ hiện cảnh báo ngay trên nút chấm công, kèm nút "Thử lại".
+- **Các nút gửi lên server bấm nhiều lần thì gửi nhiều lần** (Gửi tổng hợp ngay, Kết nối bot, Tạo mã mới, Xoá nhân viên, Kích hoạt). Giờ nút bị khoá và hiện "Đang gửi…" trong lúc chờ.
+- **Còn lượt chờ gửi mà chấm tiếp thì lượt mới tới server trước lượt cũ và bị từ chối (409).** Ví dụ check-in nằm trong hàng đợi chờ giờ thử lại, app hiện Check-out, bấm thì lượt ra tới trước lượt vào. Giờ app gửi các lượt chờ trước; lượt cũ vẫn chưa gửi được thì lượt mới xếp hàng sau và tự gửi theo đúng thứ tự.
+- **Máy quản trị tải bảng công 5 phút/lần cả khi không mở Bảng công.** 3 máy quản trị mở app cả ngày tốn khoảng 90% hạn mức list KV (đo bằng mô phỏng). Giờ chỉ tải khi đang mở Bảng công → Hôm nay; ngày hôm qua chỉ tải trước 12:00 (lúc ca tối hôm qua còn mở). 3 máy mở Bảng công cả ngày còn khoảng 60–66%.
+
+- **Màn chấm công trên điện thoại phải cuộn mới thấy nút chấm công**, và nhân viên có thanh điều hướng đáy chỉ một mục "Chấm công" chiếm chỗ.
+  - Nhân viên: bỏ thanh điều hướng đáy (quản trị vẫn giữ).
+  - Khung camera cao khoảng 48% màn hình thay vì theo tỉ lệ 4:3 toàn chiều ngang.
+  - Nút chấm công dính sát đáy màn hình (trong tầm ngón cái), không cần cuộn tìm.
+  - Thu gọn khối tên người và ô chọn ca. Đã xem ở khung 390×760 và 390×600 (giống iPhone có thanh Safari).
+- **Khung oval nhỏ hơn khuôn mặt thật khi cầm điện thoại chụp.**
+  - Nguyên nhân: oval là hình cố định trong SVG 400×300, chỉ rộng 38% khung, nên mặt người tràn ra ngoài.
+  - Cách sửa: oval co theo kích thước khung camera (container query), tỉ lệ 3:4. Trên iPhone (390×664) oval rộng 59%, cao 88% khung; trên máy tính rộng 49%, cao 88%. Viền và vùng tối quanh oval vẫn đổi màu theo trạng thái như cũ.
+- Lời nhắc "quay nhẹ đầu" không còn lặp hai chỗ (đã hiện trên khung camera). Trên điện thoại, nhân viên không còn tên trên thanh tiêu đề vì tên đã hiện ngay dưới camera.
+
+### Thêm
+- **Giới hạn tần suất bằng Workers Rate Limiting** (miễn phí, không tốn KV; khai báo trong `wrangler.toml`). Vượt mức thì trả 429 kèm câu báo phải chờ 1 phút.
+  - Mọi yêu cầu `/api` từ một IP: 300/phút (văn phòng dùng chung IP nên để rộng).
+  - Nhập sai mã kích hoạt: 10 lần/phút mỗi IP. Chỉ đếm lần sai, người dùng mã đúng cùng mạng vẫn vào được.
+  - Chấm công: 6 lần/phút mỗi mã NV.
+  - Gửi tổng hợp ngay, kết nối bot: 1 lần/phút.
+- `public/retry.js`: cách thử lại và cách báo lỗi dùng chung, có test (`test/retry.test.js`).
+- **Mô phỏng dùng thật** `test/simulate.mjs` (`npm run simulate -- <số người> <số ngày> <số máy quản trị>`): chạy Worker thật với KV và Telegram giả lập, theo đúng nhịp của app (giờ đến cao điểm 07:40–08:10, tan ca, tăng ca, ca tối, cron, bot, máy quản trị mở Bảng công cả ngày). In số request, đọc/ghi/list KV theo ngày UTC so với hạn mức, số tin Telegram cao nhất mỗi phút, mức cao nhất của từng giới hạn tần suất, số ảnh gửi lặp và lượt kẹt. Đọc giới hạn tần suất thẳng từ `wrangler.toml`. Có thể chạy với bản worker cũ và nhịp app cũ để so sánh, và giả lập sự cố hết hạn mức ghi/list giữa giờ cao điểm.
+- `test/capacity.test.js`: chặn việc vượt hạn mức quay lại. 30 người với 2 máy quản trị: mọi hạn mức dưới 50%. 100 người: dưới 70%. Hết hạn mức ghi KV lúc 07:58–08:30: không ảnh lặp, không mất lượt, không lượt bị từ chối. Hết hạn mức list cả buổi sáng: chấm công vẫn chạy.
+
+### Thay đổi
+- Service worker lên `v15`.
+
+## 2026-10-26: Hết hạn mức lệnh list KV (1.000 lần/ngày)
+
+Đã deploy: phiên bản `258135c6-aa9f-4fe8-86fa-d1488cc164cb` (2026-10-26).
+
+### Sửa lỗi
+- **App tải lại bảng công mỗi 30 giây, làm cạn hạn mức list KV sau khoảng 3 giờ.**
+  - Nguyên nhân: `flushQueue` (gửi lại lượt chấm công offline, chạy 30 giây/lần) luôn gọi `loadToday()`, kể cả khi hàng đợi trống và tab bị ẩn. Với quản trị viên, mỗi lần là một request `/api/logs`, tốn 2 lệnh list. Log Observability ngày 26/10: 461/1.000 request là `/api/logs` từ một máy, đều 3 request/phút.
+  - Cách sửa: chỉ làm mới khi gửi được ít nhất một lượt.
+- **Hết hạn mức list thì người chưa có bản ghi trạng thái không chấm công được** (`/api/status` và `/api/punch` lỗi 500).
+  - Nguyên nhân: `loadState` dựng lại trạng thái từ lịch sử bằng list, list lỗi thì cả request lỗi.
+  - Cách sửa: list lỗi thì coi như chưa vào ca và vẫn cho chấm công; lần sau thử dựng lại.
+- **Xem bảng công một tháng tốn khoảng 30 lệnh list, và cache không giúp được** vì Cache API không có tác dụng trên `*.workers.dev`.
+  - Cách sửa: ngày công đã khoá (12:00 trưa hôm sau, cộng 24 giờ cho lượt gửi trễ) được lưu thành một key `day:<ngày>` và đọc bằng `get`. Ngày đã khoá chưa có key này thì list theo tháng (`log:YYYY-MM-`, 1 lệnh cho tới 1.000 lượt) thay vì từng ngày.
+  - Kết quả: bảng công một tháng tốn 1–2 lệnh list lần đầu, 0 lệnh những lần sau. Mỗi ngày tốn thêm 1 lần ghi KV khi lưu.
+  - Ngày còn mở (hôm nay, hôm qua) vẫn list như cũ, nên lượt chấm mới hiện ngay.
+
+### Thay đổi
+- Service worker lên `v13` để máy tải lại `app.js` mới.
+- `TOI-UU-CHI-PHI.md`: ghi lại số đo và cách sửa.
+
+## 2026-10-26: Lịch sử chấm công chỉ dành cho quản trị (bảo mật)
+
+Đã deploy: phiên bản `258135c6-aa9f-4fe8-86fa-d1488cc164cb` (2026-10-26).
+
+### Sửa lỗi
+- **Nhân viên có thể làm cạn hạn mức KV miễn phí trong ngày.**
+  - Nguyên nhân: `GET /api/logs` cho mọi người đã kích hoạt gọi, mỗi lần tới 62 ngày, mỗi ngày tốn một lệnh liệt kê KV (gói free 1.000 lần/ngày). App chạy trên `*.workers.dev`, nơi Cache API không có tác dụng, nên gọi thẳng API khoảng 17 lần là hết hạn mức; Bảng công, tin tổng hợp của bot và trạng thái ca đều lỗi tới hết ngày.
+  - Cách sửa: `/api/logs` chỉ cho quản trị viên, nhân viên nhận 403. App không bị ảnh hưởng vì chỉ dùng API này ở Bảng công (đã chỉ dành cho quản trị). Có test "Lỗi đã gặp" tái hiện.
+
 ## 2026-10-26: Check-in 1 lần, check-out kết thúc ca, tăng ca, thiếu công
 
 Đã deploy: phiên bản `ab1a647e-074f-4481-9e98-349b843d7cc5` (2026-10-26).

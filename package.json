@@ -4,7 +4,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "test": "node --test test/*.test.js",
-    "deploy": "npm test && wrangler deploy"
+    "deploy": "npm test && wrangler deploy",
+    "simulate": "node --no-warnings test/simulate.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.152.0"

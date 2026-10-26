@@ -560,6 +560,30 @@ describe('app.js dùng face-logic.js', () => {
     }
   });
 
+  test('Lỗi đã gặp: hàng đợi offline 30 giây/lần tải lại bảng công kể cả khi không có gì để gửi (cạn hạn mức list KV)', () => {
+    // mỗi tab quản trị gọi /api/logs 2 lần/phút, kể cả khi tab bị ẩn: ~5.700 lệnh list/ngày
+    const body = app.match(/async function flushQueue\([^)]*\) \{[\s\S]*?\n\}\n/)[0];
+    assert.equal(body.match(/loadToday\(/g).length, 1, 'chỉ gọi loadToday ở một chỗ');
+    assert.match(body, /if \(sent\)[^\n]*loadToday\(/, 'chỉ làm mới khi đã gửi được lượt nào');
+  });
+
+  test('Lỗi đã gặp: trên điện thoại nút chấm công nằm dưới màn hình phải cuộn mới thấy, thanh điều hướng chỉ có một mục', () => {
+    assert.match(app, /document\.body\.classList\.toggle\('solo', !isAdmin\(\)\)/, 'nhân viên: ẩn thanh điều hướng một mục');
+    const mobile = [...html.matchAll(/@media \(max-width:760px\)\{([\s\S]*?)\n  \}/g)].map(m => m[1]).join('\n');
+    assert.match(mobile, /body\.solo \.nav\{display:none\}/);
+    assert.match(mobile, /\.punch\{position:sticky;bottom:/, 'nút chấm công dính đáy màn hình');
+    assert.match(mobile, /\.stage\{[^}]*svh/, 'khung camera giới hạn theo chiều cao màn hình');
+  });
+
+  test('Lỗi đã gặp: khung oval nhỏ hơn khuôn mặt thật khi cầm điện thoại chụp (cố định 38% bề ngang)', () => {
+    // khung cũ là ellipse cố định trong SVG 400×300: rx 76 → chỉ 38% bề ngang, mặt người tràn ra ngoài
+    assert.doesNotMatch(html, /<ellipse class="ring"/);
+    const rule = html.match(/\.guide \.oval\{([^}]*)\}/)?.[1] || '';
+    const cqw = Number(rule.match(/width:min\((\d+)cqw/)?.[1]);
+    assert.ok(cqw >= 55, `oval rộng ít nhất 55% khung camera (đang ${cqw || '?'}%)`);
+    assert.match(rule, /aspect-ratio:3\/4/, 'giữ tỉ lệ khuôn mặt');
+  });
+
   test('index.html nạp đủ các file logic dùng chung trước app.js', () => {
     for (const f of ['face-logic.js', 'sort.js', 'shifts.js', 'import.js']) {
       assert.ok(html.indexOf(`src="${f}"`) > 0 && html.indexOf(`src="${f}"`) < html.indexOf('src="app.js"'), f);

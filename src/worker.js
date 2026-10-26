@@ -74,6 +74,8 @@ async function authenticate(req, env) {
   if (env.ADMIN_KEY && raw === env.ADMIN_KEY) return { root: true, role: ROLE_ADMIN, name: 'Quản trị hệ thống' };
   const hash = await sha256(normCode(raw));
   const emp = (await getEmployees(env)).find(e => e.keyHash === hash);
+  // chỉ đếm lần nhập sai: người nhập sai nhiều bị chặn, người dùng mã đúng cùng mạng (máy chung ở văn phòng) vẫn vào được
+  if (!emp) await rateLimit(env, 'RL_AUTH', clientIp(req), 'Nhập sai mã kích hoạt quá nhiều lần. Chờ 1 phút rồi thử lại.');
   if (!emp) throw httpError(401, 'Mã kích hoạt không đúng hoặc đã được đổi. Liên hệ quản trị viên để lấy mã mới.');
   return { ...emp, role: emp.role === ROLE_ADMIN ? ROLE_ADMIN : ROLE_EMPLOYEE };
 }
@@ -114,9 +116,19 @@ function parseAvatar(dataUrl) {
   return { type: m[1], bytes };
 }
 
+// ---------------- Giới hạn tần suất ----------------
+// Workers Rate Limiting (binding trong wrangler.toml, không tốn KV). Chưa có binding (chạy thử, test) thì không chặn.
+const clientIp = req => req.headers.get('CF-Connecting-IP') || 'local';
+async function rateLimit(env, binding, key, message) {
+  if (!env[binding]) return;
+  const { success } = await env[binding].limit({ key });
+  if (!success) throw httpError(429, message);
+}
+
 // ---------------- API ----------------
 async function api(req, env, url) {
   const p = url.pathname, m = req.method;
+  await rateLimit(env, 'RL_IP', clientIp(req), 'Quá nhiều yêu cầu từ mạng này. Chờ 1 phút rồi thử lại.');
   const user = await authenticate(req, env);
   const isAdmin = user.role === ROLE_ADMIN;
   const needAdmin = () => { if (!isAdmin) throw httpError(403, 'Chỉ quản trị viên được dùng chức năng này'); };
@@ -236,14 +248,13 @@ async function api(req, env, url) {
   }
 
   if (p === '/api/logs' && m === 'GET') {
+    needAdmin();   // mỗi ngày hỏi tốn 1 lệnh list KV (free 1.000/ngày); app chỉ dùng ở Bảng công
     const today = ymd(localNow(env));
     const from = url.searchParams.get('from') || today;
     const to = url.searchParams.get('to') || from;
     const days = dateRange(from, to);
     if (days.length > 62) throw httpError(400, 'Tối đa 62 ngày');
-    const out = [];
-    for (const d of days) out.push(...await logsOfDay(env, d));
-    return json(isAdmin ? out : out.filter(l => l.code === user.code));   // nhân viên chỉ xem của mình
+    return json(await logsOfRange(env, days));
   }
 
   if (p === '/api/photo' && m === 'GET') {
@@ -255,6 +266,7 @@ async function api(req, env, url) {
 
   if (p === '/api/setup' && m === 'POST') {
     needAdmin();
+    await rateLimit(env, 'RL_ACTION', 'setup', 'Vừa kết nối bot. Chờ 1 phút rồi thử lại.');
     await tg(env, 'setWebhook', {
       url: `${url.origin}/telegram/webhook`,
       secret_token: env.WEBHOOK_SECRET,
@@ -271,6 +283,7 @@ async function api(req, env, url) {
 
   if (p === '/api/report-now' && m === 'POST') {
     needAdmin();
+    await rateLimit(env, 'RL_ACTION', 'report', 'Vừa gửi tổng hợp vào group. Chờ 1 phút rồi gửi lại.');
     // gửi giữa ngày: dùng mẫu "đang làm việc", không gọi người chưa ra là "quên check-out"
     const text = await buildSummary(env, ymd(localNow(env)));
     await tg(env, 'sendMessage', { chat_id: env.TELEGRAM_CHAT_ID, text, parse_mode: 'HTML' });
@@ -292,6 +305,7 @@ async function recentLogs(env, code, ts, { fresh = false } = {}) {
 // Không dựa vào KV.list: list của KV có thể chậm tới ~60 giây, làm app hiện lại nút Check-in
 // ngay sau khi vừa check-in và cho check-in trùng. Đọc một key thì thấy ngay giá trị vừa ghi.
 const stateKey = code => 'state:' + code;
+const logKey = (date, ts, code) => `log:${date}:${ts}:${code}`;
 // Hết ngày công của một ca: ca sáng hết lúc 00:00 hôm sau; ca tối (qua đêm) hết lúc 12:00 trưa hôm sau,
 // là mốc từ đó check-in ca tối được tính cho ngày công mới (giống shiftDateFor). Giữ giống dayEndsAt trong public/shifts.js.
 function dayEndTs(env, date, shift) {
@@ -306,7 +320,9 @@ async function loadState(env, code, ts) {
   const st = await env.KV.get(stateKey(code), 'json');
   if (st) return st.inTs ? st : null;
   // người chưa có bản ghi trạng thái (chấm công từ bản cũ): dựng lại một lần từ lịch sử rồi lưu
-  const logs = await recentLogs(env, code, ts, { fresh: true });
+  let logs;
+  try { logs = await recentLogs(env, code, ts, { fresh: true }); }
+  catch { return null; }   // hết hạn mức list KV: coi như chưa vào ca, không chặn chấm công; lần sau thử dựng lại
   const lastIn = logs.filter(l => l.type === 'in' && l.ts < ts).at(-1);
   const derived = lastIn ? {
     shift: shiftOf(lastIn), date: lastIn.date, inTs: lastIn.ts, inTime: lastIn.time,
@@ -339,6 +355,7 @@ function locationText(loc) {
 const locShort = loc => !loc ? undefined : loc.src === 'gps' ? `${loc.lat},${loc.lng}${loc.acc !== null ? ',' + loc.acc : ''}` : 'net:' + loc.place;
 
 async function punch(req, env, emp) {
+  await rateLimit(env, 'RL_PUNCH', emp.code, 'Chấm công quá nhanh. Chờ 1 phút rồi thử lại.');
   const form = await req.formData();
   const code = emp.code, type = form.get('type'), photo = form.get('photo');   // luôn chấm cho chính người đăng nhập
   if (!['in', 'out'].includes(type)) throw httpError(400, 'Loại không hợp lệ');
@@ -352,13 +369,16 @@ async function punch(req, env, emp) {
   const local = new Date(ts + offsetMs(env));
   const day = ymd(local), time = hms(local);
 
-  // App gửi lại đúng lượt đã nhận (mất phản hồi giữa chừng): trả OK, không gửi ảnh lần hai
   const st = await loadState(env, code, ts);
-  if (st && (st.inTs === ts || st.outs.includes(ts))) return json({ ok: true, duplicate: true });
-
   // Ca và ngày công: lượt vào lấy ca do nhân viên chọn; lượt ra thuộc ca đang mở
-  let shift, date, outNo = 0;
-  if (type === 'in') {
+  let shift, date, outNo = 0, repair = false;
+  if (st && (st.inTs === ts || st.outs.includes(ts))) {
+    // App gửi lại đúng lượt đã ghi trạng thái. Có bản ghi rồi (mất phản hồi giữa chừng): trả OK, không gửi ảnh lần hai.
+    // Chưa có bản ghi (lỗi sau khi ghi trạng thái): gửi ảnh và ghi bản ghi, giữ nguyên trạng thái.
+    shift = st.shift; date = st.date; outNo = st.inTs === ts ? 0 : st.outs.indexOf(ts) + 1;
+    if ((await env.KV.getWithMetadata(logKey(date, ts, code))).metadata) return json({ ok: true, duplicate: true });
+    repair = true;
+  } else if (type === 'in') {
     shift = String(form.get('shift') || '');
     if (!SHIFTS[shift]) throw httpError(400, 'Chọn ca làm việc trước khi check-in');
     // chưa check-out ca đang làm thì không vào ca khác; đã check-out rồi thì ca đó kết thúc, vào ca khác được
@@ -395,7 +415,17 @@ async function punch(req, env, emp) {
   fd.append('caption', caption);
   fd.append('parse_mode', 'HTML');
   fd.append('photo', photo, `${code}_${type}_${ts}.jpg`);
-  const msg = await tg(env, 'sendPhoto', fd);
+  // Ghi trạng thái trước khi gửi ảnh: ghi KV lỗi thì dừng ở đây, chưa có ảnh nào lên group,
+  // nên app gửi lại 30 giây/lần cũng không tạo ảnh lặp. Gửi ảnh lỗi thì trả lại trạng thái cũ.
+  if (!repair) await env.KV.put(stateKey(code), JSON.stringify(type === 'in'
+    ? { shift, date, inTs: ts, inTime: time, outs: [] }
+    : { ...st, outs: [...st.outs, ts] }));
+  let msg;
+  try { msg = await tg(env, 'sendPhoto', fd); }
+  catch (e) {
+    if (!repair) await env.KV.put(stateKey(code), JSON.stringify(st || { none: true })).catch(() => {});
+    throw e;
+  }
 
   const meta = {
     code, name: emp.name.slice(0, 80), type, ts, time, shift, outNo: outNo || undefined,
@@ -406,10 +436,7 @@ async function punch(req, env, emp) {
     loc: locShort(loc),
     msg: msg.message_id, photo: msg.photo[msg.photo.length - 1].file_id,
   };
-  await env.KV.put(`log:${date}:${ts}:${code}`, '', { metadata: meta, expirationTtl: LOG_TTL });
-  await env.KV.put(stateKey(code), JSON.stringify(type === 'in'
-    ? { shift, date, inTs: ts, inTime: time, outs: [] }
-    : { ...st, outs: [...st.outs, ts] }));
+  await env.KV.put(logKey(date, ts, code), '', { metadata: meta, expirationTtl: LOG_TTL });
   await forgetDay(date);
   return json({ ok: true, record: { ...meta, date } });
 }
@@ -507,20 +534,47 @@ const dayCacheKey = date => new Request(`https://cache.timesheet.internal/logs/$
 async function forgetDay(date) {
   await globalThis.caches?.default?.delete(dayCacheKey(date));
 }
+// Ngày công đã khoá: qua 12:00 trưa hôm sau (hết ca tối) thêm 24 giờ cho lượt gửi trễ thì không nhận thêm lượt nào.
+// Ngày đã khoá lưu thành một key `day:<ngày>` (đọc bằng get, hạn mức 100k/ngày) để không phải list lại.
+const dayKey = date => 'day:' + date;
+const isLocked = (env, date) => Date.now() > dayEndTs(env, date, 'toi') + MAX_DELAY_MS;
+async function listLogs(env, prefix) {
+  const out = [];
+  let cursor;
+  do {
+    const r = await env.KV.list({ prefix, cursor });
+    for (const k of r.keys) if (k.metadata) out.push({ ...k.metadata, date: k.name.slice(4, 14) });
+    cursor = r.list_complete ? null : r.cursor;
+  } while (cursor);
+  return out.sort((a, b) => a.ts - b.ts);
+}
+// Lịch sử nhiều ngày (Bảng công): ngày đã khoá đọc ảnh chụp; chưa có thì list theo tháng (1 lệnh cho tới 1.000 lượt)
+// thay vì mỗi ngày một lệnh, rồi lưu ảnh chụp. Ngày chưa khoá (hôm nay, hôm qua) vẫn list như cũ.
+async function logsOfRange(env, days) {
+  const got = new Map();
+  const locked = days.filter(d => isLocked(env, d));
+  await Promise.all(locked.map(async d => { const snap = await env.KV.get(dayKey(d), 'json'); if (snap) got.set(d, snap); }));
+  const byMonth = new Map();
+  for (const d of locked) if (!got.has(d)) byMonth.set(d.slice(0, 7), [...(byMonth.get(d.slice(0, 7)) || []), d]);
+  for (const [month, ds] of byMonth) {
+    const logs = ds.length > 1 ? await listLogs(env, `log:${month}-`) : await listLogs(env, `log:${ds[0]}:`);
+    for (const d of ds) {
+      const mine = logs.filter(l => l.date === d);
+      got.set(d, mine);
+      await env.KV.put(dayKey(d), JSON.stringify(mine));
+    }
+  }
+  const out = [];
+  for (const d of days) out.push(...(got.get(d) || await logsOfDay(env, d)));
+  return out;
+}
 async function logsOfDay(env, date, { fresh = false } = {}) {
   const cache = globalThis.caches?.default;
   if (cache && !fresh) {
     const hit = await cache.match(dayCacheKey(date));
     if (hit) return hit.json();
   }
-  const out = [];
-  let cursor;
-  do {
-    const r = await env.KV.list({ prefix: `log:${date}:`, cursor });
-    for (const k of r.keys) if (k.metadata) out.push({ ...k.metadata, date });
-    cursor = r.list_complete ? null : r.cursor;
-  } while (cursor);
-  out.sort((a, b) => a.ts - b.ts);
+  const out = await listLogs(env, `log:${date}:`);
   if (cache) {
     const maxAge = date < ymd(localNow(env)) ? 3600 : 60;
     await cache.put(dayCacheKey(date), new Response(JSON.stringify(out), { headers: { 'Content-Type': 'application/json', 'Cache-Control': `max-age=${maxAge}` } }));

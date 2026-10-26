@@ -65,6 +65,10 @@
     .nav{position:fixed;left:0;right:0;bottom:0;margin:0;justify-content:space-around;padding:6px 8px;padding-bottom:max(6px,env(safe-area-inset-bottom));background:var(--sheet);border-top:1px solid var(--rule);z-index:20}
     .nav button{flex:1;flex-direction:column;gap:2px;padding:6px 4px;font-size:12px}
     main{padding-bottom:calc(var(--nav-h) + env(safe-area-inset-bottom) + 20px)!important}
+    /* nhân viên chỉ có màn chấm công: bỏ thanh điều hướng một mục, trả chỗ cho nút chấm công */
+    body.solo .nav{display:none}
+    body.solo .who{display:none}   /* tên đã hiện ngay dưới camera */
+    body.solo main{padding-bottom:calc(env(safe-area-inset-bottom) + 20px)!important}
   }
 
   main{max-width:1280px;margin:0 auto;padding:24px}
@@ -100,13 +104,15 @@
   /* ---------- Màn chấm công ---------- */
   .kiosk{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(330px,1fr);gap:32px;align-items:start}
   @media (max-width:980px){.kiosk{grid-template-columns:1fr;gap:20px}}
-  .stage{position:relative;aspect-ratio:4/3;background:#070a08;border-radius:18px;overflow:hidden;isolation:isolate}
+  .stage{position:relative;aspect-ratio:4/3;background:#070a08;border-radius:18px;overflow:hidden;isolation:isolate;container-type:size}
   .stage video,.stage canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
-  .guide{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
-  .guide .ring{fill:none;stroke:rgba(255,255,255,.6);stroke-width:2.5;stroke-dasharray:6 8;transition:stroke .2s,stroke-width .2s}
-  .stage[data-state="ok"] .ring{stroke:#4cc48a;stroke-dasharray:none;stroke-width:4}
-  .stage[data-state="unknown"] .ring{stroke:#f0ac45;stroke-dasharray:none}
-  .stage[data-state="enroll"] .ring{stroke:#9d93ff;stroke-dasharray:none;stroke-width:4}
+  /* Khung mặt: co theo khung camera (cỡ khuôn mặt khi cầm điện thoại ngang tầm mắt), không cố định theo pixel */
+  .guide{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+  .guide .oval{position:absolute;left:50%;top:50%;width:58%;width:min(60cqw,66cqh);aspect-ratio:3/4;transform:translate(-50%,-46%);border-radius:50%;box-shadow:0 0 0 200vmax rgba(7,10,8,.38)}
+  .guide .oval::after{content:'';position:absolute;inset:0;border-radius:inherit;border:2.5px dashed rgba(255,255,255,.65);transition:border-color .2s}
+  .stage[data-state="ok"] .oval::after{border:4px solid #4cc48a}
+  .stage[data-state="unknown"] .oval::after{border:3px solid #f0ac45}
+  .stage[data-state="enroll"] .oval::after{border:4px solid #9d93ff}
   .pill{position:absolute;left:50%;top:14px;transform:translateX(-50%);display:flex;align-items:center;gap:8px;padding:7px 14px;border-radius:99px;background:rgba(7,10,8,.7);color:#fff;font-size:14px;font-weight:500;white-space:nowrap;z-index:2;max-width:calc(100% - 28px);overflow:hidden;text-overflow:ellipsis}
   .pill i{width:8px;height:8px;border-radius:50%;background:#a5aea8;flex:none}
   .stage[data-state="ok"] .pill i{background:#4cc48a}
@@ -198,6 +204,21 @@
   .punch:active{transform:translateY(1px)}
   .punch:disabled{background:var(--sheet-2);color:var(--ink-soft);cursor:not-allowed;transform:none}
   .punch:disabled .pk{display:none}
+  /* Điện thoại: camera vừa nửa màn hình, nút chấm công luôn ở đáy trong tầm ngón cái (không phải cuộn tìm) */
+  @media (max-width:760px){
+    .kiosk{gap:14px}
+    .stage{aspect-ratio:auto;height:clamp(240px,48svh,460px);border-radius:16px}
+    .person{min-height:0;gap:12px}
+    .person .avatar{width:44px;height:44px;border-radius:10px}
+    .p-name{font-size:18px}
+    .p-meta{font-size:13.5px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+    .shift-pick{margin-top:12px}
+    .shift-opts button{padding:9px 12px}
+    .shift-opts button span{font-size:17px}
+    .punch{position:sticky;bottom:calc(var(--nav-h) + env(safe-area-inset-bottom) + 10px);z-index:10;padding:14px 16px;box-shadow:0 10px 28px rgba(0,0,0,.18)}
+    .punch .pl{font-size:28px}
+    body.solo .punch{bottom:calc(env(safe-area-inset-bottom) + 12px)}
+  }
   @media (prefers-color-scheme: dark){.punch:not(:disabled){color:#0f1411}}
 
   .attend{margin-top:4px}
@@ -279,6 +300,9 @@
   .note.warn{background:var(--late-wash);color:var(--late)}
   .note.ok{background:var(--in-wash);color:var(--in)}
   .note.err{background:var(--error-wash);color:var(--error)}
+  .note.sync{margin-top:12px}
+  .link{background:none;border:0;padding:0;color:inherit;font:inherit;font-weight:600;text-decoration:underline;cursor:pointer}
+  .link:disabled{opacity:.6;cursor:default}
   @media (max-width:760px){
     .enroll{grid-template-columns:1fr}
     dialog#enrollDlg{width:100%;max-width:100%;height:100%;max-height:100%;border-radius:0;margin:0}
@@ -351,11 +375,7 @@
       <div class="stage" id="stage" data-state="loading">
         <video id="video" autoplay playsinline muted></video>
         <canvas id="overlay"></canvas>
-        <svg class="guide" viewBox="0 0 400 300" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
-          <defs><mask id="hole"><rect width="400" height="300" fill="#fff"/><ellipse cx="200" cy="146" rx="76" ry="100" fill="#000"/></mask></defs>
-          <rect width="400" height="300" fill="rgba(7,10,8,.38)" mask="url(#hole)"/>
-          <ellipse class="ring" cx="200" cy="146" rx="76" ry="100"/>
-        </svg>
+        <div class="guide" aria-hidden="true"><div class="oval"></div></div>
         <div class="pill" role="status" aria-live="polite"><i></i><span id="pillText">Đang khởi động</span></div>
         <div class="stage-msg" id="stageMsg">
           <div class="spinner" id="stageSpin"></div>
@@ -388,6 +408,7 @@
           <div class="step">2. Check-in</div>
         </div>
         <div class="shift-now" id="shiftNow" hidden></div>
+        <div class="note warn sync" id="syncWarn" role="status" hidden><span></span><button type="button" class="link" id="btnSyncRetry">Thử lại</button></div>
         <button class="punch" id="btnPunch" disabled>
           <span><span class="pl" id="punchLabel">Check-in</span><div class="ps" id="punchSub">Đứng trước camera để bắt đầu</div></span>
           <span class="pk">Space</span>
@@ -534,7 +555,7 @@
     <p class="soft" style="margin:0 0 18px">Nhập mã kích hoạt quản trị viên gửi cho bạn. Mỗi máy chỉ cần nhập một lần.</p>
     <input class="input code-input" id="onboardKey" placeholder="VD: K7PM-3QXD" required autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Mã kích hoạt">
     <div id="onboardErr" class="note err" style="margin-top:10px;text-align:left" hidden></div>
-    <button class="btn ink" style="width:100%;margin-top:14px;padding:12px">Kích hoạt</button>
+    <button class="btn ink" id="btnActivate" style="width:100%;margin-top:14px;padding:12px">Kích hoạt</button>
   </form>
 </dialog>
 
@@ -580,6 +601,7 @@
 <script src="sort.js"></script>
 <script src="shifts.js"></script>
 <script src="import.js"></script>
+<script src="retry.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

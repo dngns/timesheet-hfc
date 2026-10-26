@@ -9,17 +9,25 @@ class MemKV {
   constructor() { this.m = new Map(); this.lists = 0; this.listLag = false; this.hidden = new Set(); }
   async get(k, type) { const v = this.m.get(k); return v ? (type === 'json' ? JSON.parse(v.value) : v.value) : null; }
   async put(k, value, opts = {}) {
+    if (this.putFail?.(k)) throw new Error('KV put() limit exceeded for the day.');   // hết 1.000 lần ghi/ngày hoặc KV lỗi
     this.puts = (this.puts || 0) + 1; this.m.set(k, { value, metadata: opts.metadata });
     if (this.listLag) this.hidden.add(k);   // KV thật: key mới có thể chưa hiện trong list
   }
   async getWithMetadata(k) { const v = this.m.get(k); return { value: v ? v.value : null, metadata: v?.metadata ?? null }; }
   async delete(k) { this.m.delete(k); }
   async list({ prefix = '', cursor } = {}) {
+    if (this.listFail) throw new Error('KV list() limit exceeded for the day.');   // hết hạn mức 1.000 lần/ngày
     this.lists++;
     const keys = [...this.m.keys()].filter(k => k.startsWith(prefix) && !this.hidden.has(k)).sort();
     const start = cursor ? Number(cursor) : 0, page = keys.slice(start, start + 1000), done = start + 1000 >= keys.length;
     return { keys: page.map(name => ({ name, metadata: this.m.get(name).metadata })), list_complete: done, cursor: done ? undefined : String(start + 1000) };
   }
+}
+
+// Workers Rate Limiting giả lập: đếm theo key, không tự đặt lại (đủ cho một test)
+class FakeRL {
+  constructor(limit) { this.max = limit; this.n = new Map(); }
+  async limit({ key }) { const n = (this.n.get(key) || 0) + 1; this.n.set(key, n); return { success: n <= this.max }; }
 }
 
 let env, tgCalls, realFetch, msgId, tgFailNext;
@@ -49,8 +57,9 @@ afterEach(() => { globalThis.fetch = realFetch; mock.timers.reset(); });
 const vn = (s) => Date.parse(s + '+07:00');
 function setNow(s) { mock.timers.reset(); mock.timers.enable({ apis: ['Date'], now: vn(s) }); }
 
-async function call(method, path, { code, json, form, headers = {}, cf } = {}) {
+async function call(method, path, { code, json, form, headers = {}, cf, ip } = {}) {
   const h = { ...headers };
+  if (ip) h['CF-Connecting-IP'] = ip;
   if (code) h['X-Access-Code'] = code;
   let body;
   if (json !== undefined) { body = JSON.stringify(json); h['Content-Type'] = 'application/json'; }
@@ -105,7 +114,7 @@ describe('Kích hoạt và phân quyền', () => {
     const c = await addEmp('NV02', 'Bình');
     const checks = [
       ['GET', '/api/employees'], ['PUT', '/api/employees', { code: 'X', name: 'X' }], ['DELETE', '/api/employees?code=NV02'],
-      ['POST', '/api/employees/code?code=NV02'], ['GET', '/api/photo?id=F1'], ['POST', '/api/setup'], ['POST', '/api/report-now'],
+      ['POST', '/api/employees/code?code=NV02'], ['GET', '/api/photo?id=F1'], ['GET', '/api/logs'], ['POST', '/api/setup'], ['POST', '/api/report-now'],
     ];
     for (const [m, p, j] of checks) assert.equal((await call(m, p, { code: c, json: j })).status, 403, `${m} ${p}`);
   });
@@ -641,6 +650,139 @@ describe('Giảm lệnh liệt kê KV (giới hạn 1.000 lần/ngày)', () => {
   });
 });
 
+describe('Ảnh chụp ngày đã khoá và list theo tháng (không có Cache API, như trên *.workers.dev)', () => {
+  // ghi sẵn lượt vào của mỗi người trong các ngày tháng 10
+  async function seedOctober(days = 26, people = 3) {
+    for (let d = 1; d <= days; d++) for (let p = 1; p <= people; p++) {
+      const date = `2026-10-${String(d).padStart(2, '0')}`, ts = vn(`${date}T08:0${p}:00`);
+      await env.KV.put(`log:${date}:${ts}:NV0${p}`, '', { metadata: { code: `NV0${p}`, name: 'N' + p, type: 'in', ts, time: `08:0${p}:00` } });
+    }
+  }
+
+  test('Lỗi đã gặp: xem bảng công cả tháng tốn 1 lệnh list cho mỗi ngày (cạn hạn mức 1.000 lần/ngày)', async () => {
+    setNow('2026-11-26T08:00:00');
+    await seedOctober();
+    const before = env.KV.lists;
+    const r = await call('GET', '/api/logs?from=2026-10-01&to=2026-10-31', { code: ROOT });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.length, 26 * 3);
+    assert.ok(env.KV.lists - before <= 2, `lần đầu chỉ list theo tháng, đã list ${env.KV.lists - before} lần`);
+    const again = env.KV.lists;
+    const r2 = await call('GET', '/api/logs?from=2026-10-01&to=2026-10-31', { code: ROOT });
+    assert.equal(env.KV.lists, again, 'ngày đã khoá đọc từ ảnh chụp, không list lại');
+    assert.deepEqual(r2.data, r.data);
+    const dates = r.data.map(l => l.date + l.ts);
+    assert.deepEqual(dates, [...dates].sort(), 'đúng thứ tự ngày và giờ');
+  });
+
+  test('ngày còn nhận lượt gửi trễ (chưa khoá) thì không chụp lại, lượt mới vẫn hiện', async () => {
+    setNow('2026-10-26T22:00:00');
+    const c = await addEmp('NV01', 'An');
+    await punch(c, 'in', { shift: 'toi' });
+    setNow('2026-10-28T11:00:00');   // 24 giờ sau hết ngày công ca tối mới khoá (12:00 ngày 28)
+    assert.equal((await call('GET', '/api/logs?from=2026-10-26&to=2026-10-26', { code: ROOT })).data.length, 1);
+    assert.equal((await punch(c, 'out', { ts: String(vn('2026-10-27T11:30:00')) })).status, 200);
+    assert.equal((await call('GET', '/api/logs?from=2026-10-26&to=2026-10-26', { code: ROOT })).data.length, 2);
+    setNow('2026-10-28T12:30:00');
+    assert.equal((await call('GET', '/api/logs?from=2026-10-26&to=2026-10-26', { code: ROOT })).data.length, 2);
+    const before = env.KV.lists;
+    assert.equal((await call('GET', '/api/logs?from=2026-10-26&to=2026-10-26', { code: ROOT })).data.length, 2);
+    assert.equal(env.KV.lists, before);
+  });
+
+  test('Lỗi đã gặp: hết hạn mức list KV thì người chưa có bản ghi trạng thái không chấm công được (500)', async () => {
+    setNow('2026-10-26T08:00:00');
+    const c = await addEmp('NV01', 'An');
+    env.KV.listFail = true;
+    assert.equal((await call('GET', '/api/status', { code: c })).status, 200);
+    const r = await punch(c, 'in');
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    setNow('2026-10-26T08:05:00');
+    assert.equal((await punch(c, 'in')).status, 409, 'đã có bản ghi trạng thái nên vẫn chặn check-in lần hai');
+  });
+});
+
+describe('Không gửi ảnh lặp khi lỗi giữa chừng', () => {
+  test('Lỗi đã gặp: ghi KV lỗi sau khi đã gửi ảnh, app gửi lại mỗi 30 giây thì group nhận ảnh lặp mãi', async () => {
+    setNow('2026-10-26T08:00:00');
+    const c = await addEmp('NV01', 'An');
+    await env.KV.put('state:NV01', JSON.stringify({ none: true }));   // đã có bản ghi trạng thái: không cần dựng lại
+    env.KV.putFail = () => true;
+    const ts = String(Date.now());
+    for (let i = 0; i < 3; i++) assert.equal((await punch(c, 'in', { ts })).status, 500);
+    assert.equal(sent('sendPhoto').length, 0, 'không ghi được trạng thái thì chưa gửi ảnh nào');
+    env.KV.putFail = null;
+    assert.equal((await punch(c, 'in', { ts })).status, 200);
+    assert.equal(sent('sendPhoto').length, 1);
+  });
+
+  test('gửi ảnh lỗi thì trả lại trạng thái cũ: chưa vào ca, gửi lại được', async () => {
+    setNow('2026-10-26T08:00:00');
+    const c = await addEmp('NV01', 'An');
+    tgFailNext = 10;
+    const ts = String(Date.now());
+    assert.ok((await punch(c, 'in', { ts })).status >= 500);
+    assert.equal((await call('GET', '/api/status', { code: c })).data.open, null);
+    tgFailNext = 0;
+    assert.equal((await punch(c, 'in', { ts })).status, 200);
+    assert.equal((await call('GET', '/api/logs', { code: ROOT })).data.length, 1);
+  });
+
+  test('ghi bản ghi lỗi sau khi gửi ảnh: lần gửi lại bổ sung bản ghi, sau đó không gửi thêm ảnh', async () => {
+    setNow('2026-10-26T08:00:00');
+    const c = await addEmp('NV01', 'An');
+    env.KV.putFail = k => k.startsWith('log:');
+    const ts = String(Date.now());
+    assert.equal((await punch(c, 'in', { ts })).status, 500);
+    env.KV.putFail = null;
+    for (let i = 0; i < 3; i++) assert.equal((await punch(c, 'in', { ts })).status, 200);
+    assert.equal((await call('GET', '/api/logs', { code: ROOT })).data.length, 1);
+    assert.ok(sent('sendPhoto').length <= 2, `đã gửi ${sent('sendPhoto').length} ảnh`);
+  });
+});
+
+describe('Giới hạn tần suất (Workers Rate Limiting)', () => {
+  test('Lỗi đã gặp: bấm "Gửi tổng hợp ngay" nhiều lần thì group nhận nhiều tin', async () => {
+    env.RL_ACTION = new FakeRL(1);
+    setNow('2026-10-26T10:00:00');
+    assert.equal((await call('POST', '/api/report-now', { code: ROOT })).status, 200);
+    const r = await call('POST', '/api/report-now', { code: ROOT });
+    assert.equal(r.status, 429);
+    assert.match(r.data.error, /chờ 1 phút/i);
+    assert.equal(sent('sendMessage').length, 1);
+  });
+
+  test('chấm công dồn dập bằng một mã thì bị chặn 429, không gửi ảnh', async () => {
+    env.RL_PUNCH = new FakeRL(6);
+    setNow('2026-10-26T08:00:00');
+    const c = await addEmp('NV01', 'An');
+    for (let i = 0; i < 6; i++) await punch(c, 'in', { ts: String(Date.now() - i) });
+    const before = sent('sendPhoto').length;
+    assert.equal((await punch(c, 'out')).status, 429);
+    assert.equal(sent('sendPhoto').length, before);
+  });
+
+  test('nhập sai mã nhiều lần từ một mạng thì 429; mã đúng cùng mạng vẫn dùng được', async () => {
+    env.RL_AUTH = new FakeRL(5);
+    const c = await addEmp('NV01', 'An');
+    for (let i = 0; i < 5; i++) assert.equal((await call('GET', '/api/me', { code: 'SAIMA' + i, ip: '1.2.3.4' })).status, 401);
+    assert.equal((await call('GET', '/api/me', { code: 'SAIMA9', ip: '1.2.3.4' })).status, 429);
+    assert.equal((await call('GET', '/api/me', { code: c, ip: '1.2.3.4' })).status, 200);
+  });
+
+  test('quá nhiều yêu cầu từ một mạng thì 429', async () => {
+    env.RL_IP = new FakeRL(3);
+    const c = await addEmp('NV01', 'An');
+    for (let i = 0; i < 3; i++) assert.equal((await call('GET', '/api/me', { code: c, ip: '5.6.7.8' })).status, 200);
+    assert.equal((await call('GET', '/api/me', { code: c, ip: '5.6.7.8' })).status, 429);
+    assert.equal((await call('GET', '/api/me', { code: c, ip: '9.9.9.9' })).status, 200);
+  });
+
+  test('chưa cấu hình giới hạn (chạy thử) thì không chặn', async () => {
+    for (let i = 0; i < 3; i++) assert.equal((await call('POST', '/api/report-now', { code: ROOT })).status, 200);
+  });
+});
+
 describe('Telegram giới hạn tốc độ', () => {
   test('Lỗi đã gặp: Telegram báo gửi quá nhanh (429) thì server tự chờ và gửi lại', async () => {
     setNow('2026-10-26T08:00:00');
@@ -661,13 +803,24 @@ describe('Telegram giới hạn tốc độ', () => {
 });
 
 describe('Lịch sử', () => {
-  test('quản trị thấy tất cả, nhân viên chỉ thấy của mình', async () => {
+  test('quản trị thấy tất cả lượt chấm công', async () => {
     setNow('2026-10-26T08:00:00');
     const a = await addEmp('NV01', 'An'), b = await addEmp('NV02', 'Bình');
     await punch(a, 'in'); await punch(b, 'in');
     assert.equal((await call('GET', '/api/logs', { code: ROOT })).data.length, 2);
-    const mine = (await call('GET', '/api/logs', { code: b })).data;
-    assert.deepEqual(mine.map(l => l.code), ['NV02']);
+  });
+
+  test('Lỗi đã gặp: nhân viên gọi thẳng /api/logs với nhiều khoảng ngày làm cạn hạn mức liệt kê KV (1.000 lần/ngày)', async () => {
+    // app không gọi /api/logs cho nhân viên; trên *.workers.dev Cache API không có tác dụng nên mỗi ngày hỏi là một lần list
+    setNow('2026-10-26T08:00:00');
+    const c = await addEmp('NV01', 'An');
+    await punch(c, 'in');
+    const before = env.KV.lists;
+    for (const y of [2001, 2002, 2003]) {
+      const r = await call('GET', `/api/logs?from=${y}-01-01&to=${y}-03-02`, { code: c });
+      assert.equal(r.status, 403);
+    }
+    assert.equal(env.KV.lists, before, 'nhân viên không được gây ra lệnh liệt kê KV nào');
   });
 
   test('khoảng ngày: quá 62 ngày thì 400; từ ngày sau đến ngày thì rỗng', async () => {
