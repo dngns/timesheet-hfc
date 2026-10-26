@@ -1,0 +1,585 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Timesheet</title>
+<meta name="description" content="Chấm công bằng nhận diện khuôn mặt">
+<meta name="theme-color" content="#eceee8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#121714" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Timesheet">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=Big+Shoulders+Display:wght@600;700;800&display=swap" rel="stylesheet">
+<style>
+  /* Giấy sổ công + mực dấu: nền xám lục, mực xanh cho giờ vào, mực chàm cho giờ ra */
+  :root{
+    --paper:#eceee8; --sheet:#f8f9f5; --sheet-2:#e3e6de; --ink:#1b2420; --ink-soft:#5c6760; --rule:#d3d8cd;
+    --in:#17734a; --in-wash:#dcebe1; --out:#4a3db0; --out-wash:#e4e1f5;
+    --late:#a35c00; --late-wash:#f5e7cf; --error:#b42318; --error-wash:#f8e1de;
+    --focus:#4a3db0;
+    --display:"Big Shoulders Display","Arial Narrow",sans-serif;
+    --body:"Be Vietnam Pro",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --nav-h:62px;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --paper:#121714; --sheet:#1a201c; --sheet-2:#232b26; --ink:#e6eae2; --ink-soft:#97a299; --rule:#2c3530;
+      --in:#4cc48a; --in-wash:#173325; --out:#9d93ff; --out-wash:#26223f;
+      --late:#f0ac45; --late-wash:#3a2c12; --error:#ff7b6e; --error-wash:#3d1915; --focus:#9d93ff;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:var(--body);font-size:15px;line-height:1.5;background:var(--paper);color:var(--ink);-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
+  button,input,select{font:inherit;color:inherit}
+  button{cursor:pointer}
+  [hidden]{display:none!important}
+  :focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+  .soft{color:var(--ink-soft)}
+  .small{font-size:13px}
+  .stampnum{font-family:var(--display);font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:.01em}
+
+  /* ---------- Thanh trên ---------- */
+  .topbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:20px;padding:10px 24px;padding-top:max(10px,env(safe-area-inset-top));background:var(--paper);border-bottom:1px solid var(--rule)}
+  .brand{display:flex;align-items:center;gap:10px;font-family:var(--display);font-weight:800;font-size:24px;letter-spacing:.01em}
+  .brand img{width:30px;height:30px;border-radius:8px}
+  .nav{display:flex;gap:2px;margin-left:12px}
+  .nav button{display:flex;align-items:center;gap:8px;border:0;background:none;padding:8px 14px;border-radius:8px;color:var(--ink-soft);font-weight:500;white-space:nowrap}
+  @media (max-width:1100px) and (min-width:761px){.net span{display:none}.nav button{padding:8px 10px}.who{max-width:140px}}
+  .nav button svg{width:19px;height:19px}
+  .nav button:hover{color:var(--ink)}
+  .nav button[aria-current="page"]{color:var(--ink);background:var(--sheet-2)}
+  .top-right{display:flex;align-items:center;gap:10px;margin-left:auto}
+  .net{display:inline-flex;align-items:center;gap:7px;font-size:13px;color:var(--ink-soft)}
+  .net i{width:8px;height:8px;border-radius:50%;background:var(--in)}
+  .net.off i{background:var(--error)}
+  .net.off{color:var(--error)}
+  .queue{font-size:13px;color:var(--late);font-weight:500}
+
+  @media (max-width:760px){
+    .topbar{padding:10px 16px;padding-top:max(10px,env(safe-area-inset-top));gap:12px}
+    .nav{position:fixed;left:0;right:0;bottom:0;margin:0;justify-content:space-around;padding:6px 8px;padding-bottom:max(6px,env(safe-area-inset-bottom));background:var(--sheet);border-top:1px solid var(--rule);z-index:20}
+    .nav button{flex:1;flex-direction:column;gap:2px;padding:6px 4px;font-size:12px}
+    main{padding-bottom:calc(var(--nav-h) + env(safe-area-inset-bottom) + 20px)!important}
+  }
+
+  main{max-width:1280px;margin:0 auto;padding:24px}
+  @media (max-width:760px){main{padding:16px}}
+  h1.page{font-family:var(--display);font-weight:800;font-size:40px;line-height:1;margin:0;letter-spacing:.005em}
+  h2.sec{font-size:17px;font-weight:600;margin:0}
+
+  /* Nút & ô nhập */
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:9px 15px;border-radius:8px;border:1px solid var(--rule);background:var(--sheet);font-weight:500;white-space:nowrap}
+  .btn:hover{border-color:var(--ink-soft)}
+  .btn:active{transform:translateY(1px)}
+  .btn svg{width:18px;height:18px}
+  .btn.ink{background:var(--ink);border-color:var(--ink);color:var(--paper)}
+  .btn.quiet{border-color:transparent;background:none;color:var(--ink-soft)}
+  .btn.quiet:hover{color:var(--ink)}
+  .btn.danger{color:var(--error)}
+  .btn.sm{padding:6px 11px;font-size:13.5px}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+  .icon-btn{display:inline-grid;place-items:center;width:38px;height:38px;border-radius:8px;border:0;background:none;color:var(--ink-soft)}
+  .icon-btn:hover{background:var(--sheet-2);color:var(--ink)}
+  .icon-btn svg{width:20px;height:20px}
+  .field{display:flex;flex-direction:column;gap:5px;min-width:0}
+  .field label{font-size:13px;font-weight:500;color:var(--ink-soft)}
+  .input{width:100%;min-width:0;padding:9px 11px;border-radius:6px;border:1px solid var(--rule);background:var(--sheet)}
+  .input:focus{outline:none;border-color:var(--focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 22%,transparent)}
+  .search{position:relative;display:block;flex:1;min-width:180px}
+  .search svg{position:absolute;left:10px;top:50%;transform:translateY(-50%);width:17px;height:17px;color:var(--ink-soft)}
+  .search .input{padding-left:34px}
+  .toggle{display:inline-flex;gap:2px;padding:3px;border-radius:8px;background:var(--sheet-2)}
+  .toggle button{border:0;background:none;padding:6px 12px;border-radius:6px;color:var(--ink-soft);font-weight:500;font-size:14px}
+  .toggle button[aria-pressed="true"]{background:var(--sheet);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.08)}
+
+  /* ---------- Màn chấm công ---------- */
+  .kiosk{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(330px,1fr);gap:32px;align-items:start}
+  @media (max-width:980px){.kiosk{grid-template-columns:1fr;gap:20px}}
+  .stage{position:relative;aspect-ratio:4/3;background:#070a08;border-radius:18px;overflow:hidden;isolation:isolate}
+  .stage video,.stage canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+  .guide{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+  .guide .ring{fill:none;stroke:rgba(255,255,255,.6);stroke-width:2.5;stroke-dasharray:6 8;transition:stroke .2s,stroke-width .2s}
+  .stage[data-state="ok"] .ring{stroke:#4cc48a;stroke-dasharray:none;stroke-width:4}
+  .stage[data-state="unknown"] .ring{stroke:#f0ac45;stroke-dasharray:none}
+  .stage[data-state="enroll"] .ring{stroke:#9d93ff;stroke-dasharray:none;stroke-width:4}
+  .pill{position:absolute;left:50%;top:14px;transform:translateX(-50%);display:flex;align-items:center;gap:8px;padding:7px 14px;border-radius:99px;background:rgba(7,10,8,.7);color:#fff;font-size:14px;font-weight:500;white-space:nowrap;z-index:2;max-width:calc(100% - 28px);overflow:hidden;text-overflow:ellipsis}
+  .pill i{width:8px;height:8px;border-radius:50%;background:#a5aea8;flex:none}
+  .stage[data-state="ok"] .pill i{background:#4cc48a}
+  .stage[data-state="unknown"] .pill i{background:#f0ac45}
+  .stage[data-state="enroll"] .pill i{background:#9d93ff}
+  .stage-msg{position:absolute;inset:0;z-index:3;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px;text-align:center;color:#fff;background:rgba(7,10,8,.82)}
+  .stage-msg p{margin:0;max-width:40ch;color:#c9d0cb;white-space:pre-line}
+  .stage-msg svg{width:40px;height:40px;opacity:.8}
+  .spinner{width:36px;height:36px;border-radius:50%;border:3px solid rgba(255,255,255,.2);border-top-color:#fff;animation:spin .9s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .dbg{position:absolute;left:10px;bottom:10px;z-index:2;padding:4px 8px;border-radius:6px;background:rgba(7,10,8,.7);color:#e6eae2;font-size:12px;font-variant-numeric:tabular-nums}
+  .enroll-hud ~ .dbg{bottom:auto;top:52px}
+  .flash{position:absolute;inset:0;z-index:4;background:#fff;opacity:0;pointer-events:none}
+  .flash.go{animation:flash .4s ease-out}
+  @keyframes flash{from{opacity:.8}to{opacity:0}}
+
+  /* Con dấu chấm công — điểm nhấn duy nhất */
+  .result{position:absolute;inset:0;z-index:5;display:grid;place-items:center;padding:20px;background:rgba(7,10,8,.45)}
+  .stamp{--c:#17734a;background:#f8f9f5;color:var(--c);border:5px solid var(--c);border-radius:12px;padding:16px 30px 18px;text-align:center;transform:rotate(-4deg);box-shadow:0 18px 50px rgba(0,0,0,.35);animation:stamp .32s cubic-bezier(.3,1.5,.5,1) both;max-width:90%}
+  .stamp.out{--c:#4a3db0} .stamp.queued{--c:#a35c00} .stamp.error{--c:#b42318}
+  .stamp .s-kind{font-family:var(--display);font-weight:800;font-size:28px;line-height:1}
+  .stamp .s-time{font-family:var(--display);font-weight:800;font-size:96px;line-height:.95;font-variant-numeric:tabular-nums}
+  .stamp .s-name{font-weight:600;font-size:18px;color:#1b2420;margin-top:4px}
+  .stamp .s-note{font-size:13.5px;color:#5c6760;margin-top:2px}
+  .stamp.error .s-msg{font-size:18px;font-weight:600;color:#1b2420;max-width:28ch;margin-top:6px}
+  @keyframes stamp{0%{transform:rotate(-9deg) scale(1.6);opacity:0}70%{opacity:1}100%{transform:rotate(-4deg) scale(1)}}
+  @media (max-width:520px){.stamp .s-time{font-size:68px}.stamp{padding:12px 20px 14px}}
+
+  .enroll-hud{position:absolute;left:0;right:0;bottom:0;z-index:2;padding:28px 16px 14px;background:linear-gradient(0deg,rgba(7,10,8,.85),transparent);color:#fff;text-align:center}
+  .enroll-hud .tip{font-size:17px;font-weight:600}
+  .ticks{display:flex;gap:6px;justify-content:center;margin-top:10px}
+  .ticks i{width:28px;height:4px;border-radius:2px;background:rgba(255,255,255,.28)}
+  .ticks i.on{background:#9d93ff}
+
+  .side{display:flex;flex-direction:column}
+  .side > section{padding:20px 0;border-top:1px solid var(--rule)}
+  .side > section:first-child{padding-top:0;border-top:0}
+  .clock-time{font-family:var(--display);font-weight:800;font-size:88px;line-height:.9;font-variant-numeric:tabular-nums;letter-spacing:.005em}
+  .clock-time .sec{color:var(--ink-soft);font-size:44px}
+  .clock-date{margin-top:6px;color:var(--ink-soft);font-size:16px}
+  @media (max-width:980px){
+    .clock-time{font-size:56px}.clock-time .sec{font-size:28px}
+    .side .s-punch{order:-1;padding-top:0;border-top:0}
+    .side .s-clock{padding-top:20px;border-top:1px solid var(--rule)}
+  }
+  @media (hover:none){.punch .pk{display:none}}
+
+  .person{display:flex;align-items:center;gap:14px;min-height:64px}
+  .avatar{width:54px;height:54px;border-radius:12px;display:flex;align-items:center;justify-content:center;flex:none;line-height:1;font-weight:700;font-size:18px;color:#fff}
+  .avatar.sm{width:36px;height:36px;border-radius:9px;font-size:13.5px}
+  .avatar.blank{background:var(--sheet-2);color:var(--ink-soft)}
+  .avatar.blank svg{display:block;width:26px;height:26px;flex:none}
+  .avatar.sm.blank svg{width:18px;height:18px}
+  .p-name{font-size:20px;font-weight:600;line-height:1.25}
+  .p-meta{font-size:14px;color:var(--ink-soft)}
+
+  .shift-pick{margin-top:16px}
+  .step{font-size:13.5px;font-weight:600;color:var(--ink-soft);margin:0 0 8px}
+  .step:last-child{margin:14px 0 0}
+  .shift-opts{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .shift-opts button{display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:12px 14px;border-radius:10px;border:2px solid var(--rule);background:var(--sheet);text-align:left}
+  .shift-opts button b{font-size:16px}
+  .shift-opts button span{font-family:var(--display);font-weight:700;font-size:20px;color:var(--ink-soft);font-variant-numeric:tabular-nums}
+  .shift-opts button[aria-checked="true"]{border-color:var(--ink);background:var(--sheet-2)}
+  .shift-opts button[aria-checked="true"] span{color:var(--ink)}
+  .shift-opts button:disabled{opacity:.5;cursor:not-allowed}
+  .shift-opts button:disabled span{font-family:var(--body);font-size:14px;font-weight:500}
+  .shift-now{margin-top:16px;padding:10px 12px;border-radius:10px;background:var(--sheet-2);font-size:14.5px}
+  .geo{display:flex;align-items:flex-start;gap:8px;margin-top:12px;font-size:13.5px;color:var(--ink-soft)}
+  .geo svg{width:16px;height:16px;flex:none;margin-top:2px}
+  .geo.warn{color:var(--late)}
+  .avatar img{width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block}
+  .uploads{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:6px}
+  .uploads li{display:flex;align-items:center;gap:10px;font-size:13.5px}
+  .uploads img{width:40px;height:40px;object-fit:cover;border-radius:6px;flex:none}
+  .uploads .ok{color:var(--in)} .uploads .bad{color:var(--error)}
+  textarea.input{resize:vertical;font-family:inherit}
+  .check{display:flex;gap:8px;align-items:flex-start;margin-top:14px;font-size:14px}
+  .imp{width:100%;border-collapse:collapse;font-size:13.5px}
+  .imp th,.imp td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--rule)}
+  .imp th{color:var(--ink-soft);font-weight:500}
+  .imp .err td{color:var(--error)}
+  .imp-scroll{max-height:280px;overflow:auto;border:1px solid var(--rule);border-radius:8px}
+  .punch{--c:var(--in);width:100%;margin-top:16px;border:0;border-radius:12px;padding:16px 18px;display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--c);color:#fff;text-align:left;transition:background .2s}
+  .punch.out{--c:var(--out)}
+  .punch .pl{font-family:var(--display);font-weight:800;font-size:34px;line-height:1}
+  .punch .ps{font-size:14px;opacity:.9;margin-top:4px}
+  .punch .pk{flex:none;font-size:12.5px;padding:4px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.4);opacity:.85}
+  .punch:active{transform:translateY(1px)}
+  .punch:disabled{background:var(--sheet-2);color:var(--ink-soft);cursor:not-allowed;transform:none}
+  .punch:disabled .pk{display:none}
+  @media (prefers-color-scheme: dark){.punch:not(:disabled){color:#0f1411}}
+
+  .attend{margin-top:4px}
+  .bar{display:flex;height:10px;border-radius:5px;overflow:hidden;background:var(--sheet-2)}
+  .bar i{display:block;height:100%}
+  .bar .b-done{background:var(--out)} .bar .b-work{background:var(--in)}
+  .legend{display:flex;flex-wrap:wrap;gap:4px 16px;margin-top:8px;font-size:13.5px;color:var(--ink-soft)}
+  .legend span:not(.tag)::before{content:"";display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;background:var(--sheet-2);vertical-align:0}
+  .legend span.l-work::before{background:var(--in)} .legend span.l-done::before{background:var(--out)}
+  .legend b{color:var(--ink);font-weight:600}
+
+  /* Dòng sổ công */
+  .ledger{list-style:none;margin:0;padding:0}
+  .ledger > li{display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--rule)}
+  .ledger > li:first-child{border-top:0}
+  .ledger .l-main{flex:1;min-width:0}
+  .ledger .l-title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ledger .l-sub{font-size:13px;color:var(--ink-soft)}
+  .ledger .l-right{display:flex;align-items:center;gap:14px;flex:none}
+  .t-in,.t-out{font-family:var(--display);font-weight:700;font-size:22px;line-height:1;font-variant-numeric:tabular-nums}
+  .t-in{color:var(--in)} .t-out{color:var(--out)}
+  .t-none{color:var(--rule)}
+  .tag{display:inline-block;padding:2px 8px;border-radius:5px;font-size:12.5px;font-weight:600;white-space:nowrap}
+  .tag.late{background:var(--late-wash);color:var(--late)}
+  .tag.queued{background:var(--late-wash);color:var(--late)}
+  .tag.in{background:var(--in-wash);color:var(--in)}
+  .tag.out{background:var(--out-wash);color:var(--out)}
+  .tag.none{background:var(--sheet-2);color:var(--ink-soft)}
+  .slot-times{display:grid;grid-template-columns:64px 64px;gap:6px;text-align:right}
+  .state{width:84px;text-align:right}
+  .ledger > li.cols-h{padding:0 0 4px;border:0;font-size:12.5px;color:var(--ink-soft)}
+  .ledger > li.cols-h + li{border-top:0}
+  .empty{padding:28px 8px;color:var(--ink-soft);text-align:center}
+  .empty .btn{margin-top:10px}
+
+  /* ---------- Báo cáo ---------- */
+  .page-h{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:20px}
+  .sheet{background:var(--sheet);border:1px solid var(--rule);border-radius:12px;padding:20px}
+  .sheet-h{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+  .filters{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;margin-bottom:20px}
+  @media (max-width:640px){.filters{display:grid;grid-template-columns:1fr 1fr}.filters > .chips,.filters > .f-wide{grid-column:1/-1}}
+  .sort-pick{display:flex;align-items:center;gap:8px;font-size:13.5px;color:var(--ink-soft);white-space:nowrap}
+  .sort-pick .input{width:auto;padding:6px 10px}
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chips button{border:1px solid var(--rule);background:var(--sheet);padding:5px 12px;border-radius:99px;font-size:13.5px;color:var(--ink-soft)}
+  .chips button[aria-pressed="true"]{border-color:var(--ink);background:var(--ink);color:var(--paper)}
+  .summary{font-size:17px;margin:0 0 20px;max-width:70ch}
+  .summary b{font-family:var(--display);font-weight:800;font-size:26px;vertical-align:-2px}
+  .cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px}
+  @media (max-width:980px){.cols{grid-template-columns:1fr}}
+  .scroll{max-height:620px;overflow:auto}
+  .day-h{position:sticky;top:0;background:var(--sheet);padding:12px 0 6px;font-weight:600;font-size:14px;color:var(--ink-soft);border-bottom:2px solid var(--ink);z-index:1}
+  .thumb{width:54px;height:42px;border-radius:6px;background:var(--sheet-2) center/cover no-repeat;display:block;border:0;padding:0;cursor:zoom-in;flex:none}
+
+  /* ---------- Quản trị ---------- */
+  .admin{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(280px,1fr);gap:32px;align-items:start}
+  @media (max-width:980px){.admin{grid-template-columns:1fr;gap:20px}}
+  .aside > section{padding:18px 0;border-top:1px solid var(--rule)}
+  .aside > section:first-child{padding-top:0;border-top:0}
+  .aside h2{font-size:16px;font-weight:600;margin:0 0 6px}
+  .help{font-size:14px;color:var(--ink-soft);margin:0}
+  .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  .lock{max-width:420px;margin:48px auto;text-align:center}
+  .lock svg{width:34px;height:34px;color:var(--ink-soft)}
+  .lock h1{font-family:var(--display);font-weight:800;font-size:36px;margin:8px 0 6px}
+  .lock form{display:flex;gap:8px;margin-top:20px}
+
+  /* ---------- Hộp thoại ---------- */
+  dialog{border:0;padding:0;border-radius:16px;background:var(--sheet);color:var(--ink);box-shadow:0 24px 70px rgba(0,0,0,.35);width:min(980px,calc(100% - 32px));max-height:calc(100% - 32px)}
+  dialog::backdrop{background:rgba(10,14,12,.55)}
+  .dlg-h{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--rule)}
+  .dlg-h h2{margin:0;font-family:var(--display);font-weight:800;font-size:26px}
+  .dlg-b{padding:20px;overflow:auto}
+  .dlg-f{display:flex;gap:10px;align-items:center;padding:14px 20px;border-top:1px solid var(--rule)}
+  .enroll{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:24px}
+  .form{display:grid;gap:14px;align-content:start}
+  .two{display:grid;grid-template-columns:110px 1fr;gap:12px}
+  .note{padding:10px 12px;border-radius:8px;font-size:14px}
+  .note.warn{background:var(--late-wash);color:var(--late)}
+  .note.ok{background:var(--in-wash);color:var(--in)}
+  .note.err{background:var(--error-wash);color:var(--error)}
+  @media (max-width:760px){
+    .enroll{grid-template-columns:1fr}
+    dialog#enrollDlg{width:100%;max-width:100%;height:100%;max-height:100%;border-radius:0;margin:0}
+    dialog#enrollDlg[open]{display:flex;flex-direction:column}
+    dialog#enrollDlg .dlg-b{flex:1}
+  }
+  .onboard{width:min(420px,calc(100% - 32px))}
+  .code-input{text-align:center;font-size:20px;letter-spacing:.12em;text-transform:uppercase}
+  .code-show{font-size:52px;line-height:1;padding:18px 12px;border:2px dashed var(--rule);border-radius:12px;letter-spacing:.06em;user-select:all}
+  .who{font-size:14px;font-weight:600;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  @media (max-width:760px){.net span{display:none}.who{max-width:130px}}
+  .onboard form{padding:28px 24px 24px;text-align:center}
+  .onboard h2{font-family:var(--display);font-weight:800;font-size:32px;margin:12px 0 6px}
+
+  /* ---------- Xem ảnh & thông báo ---------- */
+  .viewer{position:fixed;inset:0;z-index:40;background:rgba(7,10,8,.92);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:20px}
+  .viewer img{max-width:100%;max-height:calc(100% - 64px);border-radius:10px}
+  .viewer .cap{color:#dfe4e0;font-size:14px;text-align:center}
+  .viewer .icon-btn{position:absolute;top:max(12px,env(safe-area-inset-top));right:12px;color:#fff;background:rgba(255,255,255,.12)}
+  .toasts{position:fixed;left:50%;transform:translateX(-50%);bottom:24px;z-index:50;display:flex;flex-direction:column;gap:8px;width:min(440px,calc(100% - 32px));pointer-events:none}
+  @media (max-width:760px){.toasts{bottom:calc(var(--nav-h) + env(safe-area-inset-bottom) + 12px)}}
+  .toast{display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-radius:10px;background:#1b2420;color:#f1f3ee;box-shadow:0 10px 30px rgba(0,0,0,.25);font-size:14px;pointer-events:auto;border-left:4px solid #97a299}
+  .toast.ok{border-left-color:#4cc48a} .toast.err{border-left-color:#ff7b6e} .toast.warn{border-left-color:#f0ac45}
+  .toast .t-x{margin-left:auto;background:none;border:0;color:#97a299;padding:0 0 0 8px;font-size:18px;line-height:1}
+  @media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-scan" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><path d="M9 14.5c.8.9 1.8 1.5 3 1.5s2.2-.6 3-1.5M9.5 10h0M14.5 10h0"/></symbol>
+    <symbol id="i-sheet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3M7 8l5-5 5 5M5 21h14"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></symbol>
+    <symbol id="i-camera-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m2 2 20 20M9 4h6l2 3h3a2 2 0 0 1 2 2v9M16 16.5A4 4 0 0 1 9.5 11M2 9v9a2 2 0 0 0 2 2h14"/></symbol>
+  </defs>
+</svg>
+
+<header class="topbar">
+  <div class="brand"><img src="icons/icon.svg" alt="">Timesheet</div>
+  <nav class="nav" aria-label="Điều hướng">
+    <button data-view="kiosk" aria-current="page"><svg><use href="#i-scan"/></svg>Chấm công</button>
+    <button data-view="report" data-admin hidden><svg><use href="#i-sheet"/></svg>Bảng công</button>
+    <button data-view="admin" data-admin hidden><svg><use href="#i-gear"/></svg>Quản trị</button>
+  </nav>
+  <div class="top-right">
+    <span class="queue" id="queueChip" hidden></span>
+    <button id="installBtn" class="btn sm" hidden><svg><use href="#i-download"/></svg>Cài app</button>
+    <span class="net" id="netChip"><i></i><span>Đang kết nối</span></span>
+    <span class="who" id="whoChip" hidden></span>
+    <button class="icon-btn" id="btnLogout" aria-label="Đăng xuất khỏi máy này" title="Đăng xuất khỏi máy này" hidden><svg><use href="#i-logout"/></svg></button>
+  </div>
+</header>
+
+<main>
+  <!-- ================= CHẤM CÔNG ================= -->
+  <section class="kiosk" id="view-kiosk">
+    <div id="stageHome">
+      <div class="stage" id="stage" data-state="loading">
+        <video id="video" autoplay playsinline muted></video>
+        <canvas id="overlay"></canvas>
+        <svg class="guide" viewBox="0 0 400 300" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+          <defs><mask id="hole"><rect width="400" height="300" fill="#fff"/><ellipse cx="200" cy="146" rx="76" ry="100" fill="#000"/></mask></defs>
+          <rect width="400" height="300" fill="rgba(7,10,8,.38)" mask="url(#hole)"/>
+          <ellipse class="ring" cx="200" cy="146" rx="76" ry="100"/>
+        </svg>
+        <div class="pill" role="status" aria-live="polite"><i></i><span id="pillText">Đang khởi động</span></div>
+        <div class="stage-msg" id="stageMsg">
+          <div class="spinner" id="stageSpin"></div>
+          <svg id="stageIcon" hidden><use href="#i-camera-off"/></svg>
+          <b id="stageMsgTitle">Đang tải bộ nhận diện khuôn mặt</b>
+          <p id="stageMsgText">Lần đầu cần tải khoảng 8MB. Từ lần sau, app mở ngay.</p>
+          <button class="btn" id="btnRetryCam" hidden>Mở lại camera</button>
+        </div>
+        <div class="enroll-hud" id="enrollHud" hidden>
+          <div class="tip" id="enrollTip">Nhìn thẳng vào camera</div>
+          <div class="ticks" id="enrollTicks"></div>
+        </div>
+        <div class="dbg" id="dbg" hidden></div>
+        <div class="flash" id="flash"></div>
+        <div class="result" id="result" hidden aria-live="assertive"></div>
+      </div>
+    </div>
+
+    <div class="side">
+      <section class="s-clock" aria-label="Giờ hiện tại">
+        <div class="clock-time" id="clockTime">--:--</div>
+        <div class="clock-date" id="clockDate"></div>
+      </section>
+
+      <section class="s-punch">
+        <div class="person" id="person"></div>
+        <div class="shift-pick" id="shiftPick" hidden>
+          <div class="step">1. Chọn ca</div>
+          <div class="shift-opts" role="radiogroup" aria-label="Chọn ca làm việc" id="shiftOpts"></div>
+          <div class="step">2. Check-in</div>
+        </div>
+        <div class="shift-now" id="shiftNow" hidden></div>
+        <button class="punch" id="btnPunch" disabled>
+          <span><span class="pl" id="punchLabel">Check-in</span><div class="ps" id="punchSub">Đứng trước camera để bắt đầu</div></span>
+          <span class="pk">Space</span>
+        </button>
+        <div class="geo" id="geoInfo" hidden><svg><use href="#i-pin"/></svg><span></span></div>
+      </section>
+    </div>
+  </section>
+
+  <!-- ================= BẢNG CÔNG ================= -->
+  <section id="view-report" hidden>
+    <div class="page-h">
+      <h1 class="page">Bảng công</h1>
+      <div class="toggle" role="group" aria-label="Chế độ xem">
+        <button data-rtab="today" aria-pressed="true">Hôm nay</button>
+        <button data-rtab="history" aria-pressed="false">Theo khoảng ngày</button>
+      </div>
+    </div>
+
+    <div id="r-today">
+      <div class="attend" id="todayAttend" style="margin-bottom:20px"></div>
+      <div class="sheet">
+        <div class="sheet-h">
+          <label class="search"><svg><use href="#i-search"/></svg><input class="input" id="todaySearch" type="search" placeholder="Tìm theo tên hoặc mã" aria-label="Tìm nhân viên"></label>
+          <label class="sort-pick"><span>Sắp xếp</span><select class="input" id="todaySort" aria-label="Sắp xếp danh sách"></select></label>
+          <div class="chips" id="todayFilter">
+            <button data-f="" aria-pressed="true">Tất cả</button>
+            <button data-f="working" aria-pressed="false">Đang làm</button>
+            <button data-f="absent" aria-pressed="false">Chưa vào</button>
+            <button data-f="done" aria-pressed="false">Đã ra</button>
+          </div>
+        </div>
+        <ul class="ledger" id="todayList"></ul>
+      </div>
+    </div>
+
+    <div id="r-history" hidden>
+      <div class="filters">
+        <div class="chips" id="presets" style="width:100%">
+          <button data-p="today" aria-pressed="false">Hôm nay</button>
+          <button data-p="7d" aria-pressed="false">7 ngày qua</button>
+          <button data-p="month" aria-pressed="true">Tháng này</button>
+          <button data-p="lastmonth" aria-pressed="false">Tháng trước</button>
+        </div>
+        <div class="field"><label for="fFrom">Từ ngày</label><input class="input" type="date" id="fFrom"></div>
+        <div class="field"><label for="fTo">Đến ngày</label><input class="input" type="date" id="fTo"></div>
+        <div class="field f-wide" style="flex:1;min-width:200px"><label for="fEmp">Nhân viên</label><select class="input" id="fEmp"><option value="">Tất cả nhân viên</option></select></div>
+        <div class="field"><label for="histSort">Sắp xếp</label><select class="input" id="histSort"></select></div>
+        <button class="btn f-wide" id="btnCsv"><svg><use href="#i-download"/></svg>Xuất file Excel</button>
+      </div>
+      <p class="summary" id="histSummary"></p>
+      <div class="cols">
+        <div class="sheet">
+          <div class="sheet-h"><h2 class="sec">Giờ vào, giờ ra mỗi ngày</h2></div>
+          <div class="scroll" id="sumList"></div>
+        </div>
+        <div class="sheet">
+          <div class="sheet-h"><h2 class="sec">Ảnh từng lượt chấm</h2><span class="soft small" id="logCount"></span></div>
+          <div class="scroll" id="logList"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= QUẢN TRỊ ================= -->
+  <section id="view-admin" hidden>
+    <div class="admin" id="adminBody">
+      <div>
+        <div class="page-h" style="margin-bottom:14px">
+          <h1 class="page">Nhân viên <span class="soft" id="empCount"></span></h1>
+          <div class="actions" style="margin:0">
+            <button class="btn" id="btnImport"><svg><use href="#i-upload"/></svg>Nhập danh sách</button>
+            <button class="btn ink" id="btnAddEmp"><svg><use href="#i-plus"/></svg>Thêm nhân viên</button>
+          </div>
+        </div>
+        <div class="sheet">
+          <label class="search" style="margin-bottom:6px"><svg><use href="#i-search"/></svg><input class="input" id="empSearch" type="search" placeholder="Tìm theo tên hoặc mã" aria-label="Tìm nhân viên"></label>
+          <ul class="ledger" id="empList"></ul>
+        </div>
+      </div>
+
+      <div class="aside">
+        <section>
+          <h2>Bot Telegram</h2>
+          <p class="help">Kết nối lại bot sau khi đổi token hoặc địa chỉ web. Gửi tổng hợp để xem trước tin nhắn cuối ngày trong group.</p>
+          <div class="actions">
+            <button class="btn" id="btnSetup"><svg><use href="#i-send"/></svg>Kết nối bot</button>
+            <button class="btn" id="btnReport">Gửi tổng hợp ngay</button>
+          </div>
+        </section>
+        <section>
+          <h2>Cài app lên máy</h2>
+          <p class="help">Android, Chrome: bấm <b>Cài app</b> ở thanh trên cùng, hoặc menu ⋮ rồi chọn <i>Cài đặt ứng dụng</i>.<br>iPhone, iPad: trong Safari bấm Chia sẻ rồi chọn <i>Thêm vào MH chính</i>.</p>
+        </section>
+      </div>
+    </div>
+  </section>
+</main>
+
+<dialog id="enrollDlg" aria-labelledby="enrollTitle">
+  <div class="dlg-h"><h2 id="enrollTitle">Thêm nhân viên</h2><button class="icon-btn" data-close aria-label="Đóng"><svg><use href="#i-x"/></svg></button></div>
+  <div class="dlg-b">
+    <div class="enroll">
+      <div id="enrollSlot"></div>
+      <form class="form" id="empForm" autocomplete="off">
+        <div class="two">
+          <div class="field"><label for="eCode">Mã NV</label><input class="input" id="eCode" required></div>
+          <div class="field"><label for="eName">Họ tên</label><input class="input" id="eName" required></div>
+        </div>
+        <div class="field"><label for="eRole">Quyền</label>
+          <select class="input" id="eRole"><option value="2">Nhân viên: chỉ chấm công</option><option value="1">Quản trị: xem bảng công, quản lý nhân viên</option></select></div>
+        <div class="field"><label for="eShift">Ca thường làm (để bot nhắc đúng ca)</label>
+          <select class="input" id="eShift"><option value="sang">Ca sáng 08:00–17:00</option><option value="toi">Ca tối 22:00–06:00</option></select></div>
+        <div class="field"><label for="eTg">Username Telegram (không bắt buộc)</label><input class="input" id="eTg" placeholder="@username, để bot nhắc tên"></div>
+        <div class="field">
+          <label>Khuôn mặt</label>
+          <div id="sampleInfo" class="note warn"></div>
+          <div class="actions" style="margin-top:4px">
+            <button type="button" class="btn ink" id="btnStartEnroll"><svg><use href="#i-scan"/></svg>Chụp khuôn mặt</button>
+            <button type="button" class="btn" id="btnUploadFace"><svg><use href="#i-upload"/></svg>Tải ảnh lên</button>
+            <button type="button" class="btn quiet" id="btnResetSample">Làm lại từ đầu</button>
+            <input type="file" id="faceFiles" accept="image/*" multiple hidden>
+          </div>
+          <p class="help">Tải ảnh: dùng 3–5 ảnh chụp rõ mặt, mỗi ảnh một người. Ảnh chỉ được đọc trên máy này, không gửi lên server.</p>
+          <ul class="uploads" id="uploadList"></ul>
+        </div>
+        <div id="dupWarn" class="note err" hidden></div>
+      </form>
+    </div>
+  </div>
+  <div class="dlg-f">
+    <button class="btn quiet danger" id="btnDeleteEmp" hidden>Xoá nhân viên</button>
+    <button class="btn quiet" id="btnNewCode" hidden>Tạo mã kích hoạt mới</button>
+    <span style="flex:1"></span>
+    <button class="btn" data-close>Huỷ</button>
+    <button class="btn ink" id="btnSaveEmp">Lưu nhân viên</button>
+  </div>
+</dialog>
+
+<dialog id="onboardDlg" class="onboard" aria-labelledby="onboardTitle">
+  <form id="onboardForm">
+    <img src="icons/icon.svg" alt="" width="56" height="56" style="border-radius:14px">
+    <h2 id="onboardTitle">Kích hoạt Timesheet</h2>
+    <p class="soft" style="margin:0 0 18px">Nhập mã kích hoạt quản trị viên gửi cho bạn. Mỗi máy chỉ cần nhập một lần.</p>
+    <input class="input code-input" id="onboardKey" placeholder="VD: K7PM-3QXD" required autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Mã kích hoạt">
+    <div id="onboardErr" class="note err" style="margin-top:10px;text-align:left" hidden></div>
+    <button class="btn ink" style="width:100%;margin-top:14px;padding:12px">Kích hoạt</button>
+  </form>
+</dialog>
+
+<dialog id="importDlg" aria-labelledby="importTitle">
+  <div class="dlg-h"><h2 id="importTitle">Nhập danh sách nhân viên</h2><button class="icon-btn" data-close aria-label="Đóng"><svg><use href="#i-x"/></svg></button></div>
+  <div class="dlg-b">
+    <div id="importStep1">
+      <p class="help" style="margin-bottom:12px">Cột cần có: <b>Mã NV</b>, <b>Họ tên</b>. Có thể thêm <b>Quyền</b> (Nhân viên / Quản trị), <b>Ca</b> (Sáng / Tối), <b>Telegram</b>. Trong Excel: chọn vùng dữ liệu kể cả dòng tiêu đề, sao chép rồi dán vào ô bên dưới, hoặc chọn <i>Lưu dưới dạng → CSV UTF-8</i> rồi chọn file (CSV thường có thể làm lỗi chữ tiếng Việt).</p>
+      <div class="actions" style="margin:0 0 12px">
+        <button type="button" class="btn" id="btnImportFile"><svg><use href="#i-upload"/></svg>Chọn file CSV</button>
+        <button type="button" class="btn quiet" id="btnTemplate"><svg><use href="#i-download"/></svg>Tải file mẫu</button>
+        <input type="file" id="importFile" accept=".csv,.tsv,.txt,text/csv" hidden>
+      </div>
+      <textarea class="input" id="importText" rows="6" placeholder="Hoặc dán từ Excel vào đây"></textarea>
+      <div id="importPreview" style="margin-top:14px"></div>
+      <label class="check"><input type="checkbox" id="importUpdate"> Cập nhật thông tin người đã có (giữ nguyên mã kích hoạt và khuôn mặt)</label>
+    </div>
+    <div id="importStep2" hidden></div>
+  </div>
+  <div class="dlg-f">
+    <span class="soft small" id="importCount"></span>
+    <span style="flex:1"></span>
+    <button class="btn" data-close>Đóng</button>
+    <button class="btn ink" id="btnDoImport" disabled>Nhập</button>
+  </div>
+</dialog>
+
+<dialog id="codeDlg" class="onboard" aria-labelledby="codeTitle">
+  <form method="dialog">
+    <h2 id="codeTitle">Mã kích hoạt</h2>
+    <p class="soft" id="codeFor" style="margin:0 0 16px"></p>
+    <div class="code-show stampnum" id="codeValue"></div>
+    <button type="button" class="btn" id="btnCopyCode" style="margin-top:14px"><svg><use href="#i-copy"/></svg>Sao chép mã</button>
+    <p class="note warn" style="margin:16px 0 0;text-align:left">Mã chỉ hiện một lần. Gửi riêng cho người này để họ nhập khi mở app. Nếu làm mất, tạo mã mới trong phần sửa nhân viên; mã cũ sẽ hết hiệu lực.</p>
+    <button class="btn ink" style="width:100%;margin-top:14px;padding:12px">Xong</button>
+  </form>
+</dialog>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/dist/face-api.js" crossorigin="anonymous"></script>
+<script src="face-logic.js"></script>
+<script src="sort.js"></script>
+<script src="shifts.js"></script>
+<script src="import.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

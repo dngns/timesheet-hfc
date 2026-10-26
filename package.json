@@ -1,0 +1,12 @@
+{
+  "name": "timesheet",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "test": "node --test test/*.test.js",
+    "deploy": "npm test && wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.152.0"
+  }
+}

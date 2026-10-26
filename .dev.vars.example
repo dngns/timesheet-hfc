@@ -1,0 +1,5 @@
+# Chép thành .dev.vars để chạy thử trên máy (npm run dev)
+BOT_TOKEN=123456:ABC-token-tu-BotFather
+ADMIN_KEY=doi-ma-quan-tri
+WEBHOOK_SECRET=chuoi-ngau-nhien
+TELEGRAM_CHAT_ID=-1001234567890

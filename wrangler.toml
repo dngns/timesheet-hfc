@@ -1,0 +1,33 @@
+name = "timesheet"
+main = "src/worker.js"
+compatibility_date = "2025-09-01"
+
+# Phục vụ luôn giao diện PWA trong thư mục public/ (cùng domain với API)
+[assets]
+directory = "./public"
+
+# Lưu danh sách nhân viên + chỉ mục chấm công (ảnh nằm trên Telegram)
+# Tạo bằng: npx wrangler kv namespace create KV  -> dán id vào đây
+[[kv_namespaces]]
+binding = "KV"
+id = "0fb1c8ed73e6424ca2c8715420f69495"
+
+# Giờ UTC. Việt Nam = UTC+7:
+#   00:00 UTC = 07:00 VN -> tổng hợp ca tối hôm trước (thứ 3–7, cho ca tối thứ 2–6)
+#   02:00 UTC = 09:00 VN -> nhắc ca sáng chưa check-in
+#   11:30 UTC = 18:30 VN -> tổng hợp ca sáng, cảnh báo quên check-out
+#   16:00 UTC = 23:00 VN -> nhắc ca tối chưa check-in
+[triggers]
+crons = ["0 0 * * 2-6", "0 2 * * 1-5", "30 11 * * 1-5", "0 16 * * 1-5"]
+
+[vars]
+TZ_OFFSET = "7"           # múi giờ (giờ)
+LATE_GRACE_MIN = "30"     # số phút ân hạn sau giờ bắt đầu ca (08:00 / 22:00) mới tính đi muộn
+TELEGRAM_CHAT_ID = "-5497514842"     # id group, vd: -1001234567890 (gõ /chatid trong group để lấy)
+HOLIDAYS = ""                       # ngày lễ không nhắc/tổng hợp, cách nhau dấu phẩy, vd: "2026-09-02,2027-01-01"
+
+# Bí mật (không ghi vào file này), đặt bằng `npx wrangler secret put <TÊN>`:
+#   BOT_TOKEN       token bot từ @BotFather
+#   ADMIN_KEY       mã tài khoản quản trị gốc (tạo nhân viên lần đầu, không chấm công)
+# Nhân viên đăng nhập bằng mã kích hoạt riêng do quản trị viên tạo trong app.
+#   WEBHOOK_SECRET  chuỗi ngẫu nhiên bảo vệ webhook Telegram
