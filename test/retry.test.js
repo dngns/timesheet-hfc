@@ -29,6 +29,11 @@ describe('retry.js', () => {
     assert.doesNotMatch(describeError(500, 'x'), /mạng/);
     assert.match(describeError(429, 'Chờ 1 phút'), /Chờ 1 phút/);
   });
+
+  test('lỗi máy chủ kèm mã tra cứu để báo quản trị viên tra trong log', () => {
+    assert.match(describeError(500, 'Máy chủ gặp lỗi', 'abc123-SIN'), /mã tra cứu: abc123-SIN/);
+    assert.doesNotMatch(describeError(409, 'Đã check-in', 'abc123-SIN'), /mã tra cứu/, 'lỗi nghiệp vụ không cần mã tra cứu');
+  });
 });
 
 describe('app.js báo lỗi và chống bấm lặp', () => {
@@ -70,6 +75,39 @@ describe('app.js báo lỗi và chống bấm lặp', () => {
     const body = fn('loadToday');
     assert.match(body, /if \(isAdmin\(\) && todayOpen\(\)\)/);
     assert.match(body, /getHours\(\) < 12/, 'ngày hôm qua chỉ cần trước 12:00 (ca tối hôm qua còn mở)');
+  });
+
+  test('Lỗi đã gặp: đang tối vẫn chọn được ca sáng (app không khoá ca ngoài khung giờ)', () => {
+    const body = app.match(/function renderShift\(\) \{[\s\S]*?\n\}\n/)[0];
+    assert.match(body, /isShiftOpen\(/);
+    assert.match(body, /Mở lúc/);
+  });
+
+  test('Lỗi đã gặp: chuyển qua lại giữa các tab thì bảng công "Hôm nay" tải lại mỗi lần (tốn lệnh list KV)', () => {
+    const body = fn('loadToday');
+    assert.match(body, /TODAY_FRESH_MS/, 'dữ liệu hôm nay còn mới thì không tải lại');
+    assert.match(app, /const TODAY_FRESH_MS = 60 \* 1000/);
+    const nav = app.match(/function showView\(v\) \{[\s\S]*?\n\}\n/)[0];
+    assert.doesNotMatch(nav, /loadToday\(\{ force/, 'chuyển tab không bắt tải lại');
+    // đổi qua khoảng ngày khác rồi chọn lại khoảng cũ: dùng lại kết quả vừa tải
+    assert.match(fn('loadHistory'), /historyCache\.get\(/);
+  });
+
+  test('Lỗi đã gặp: mã kích hoạt nằm trong localStorage và header mọi request (mở F12 là thấy, chép sang máy khác dùng được)', () => {
+    assert.doesNotMatch(app, /store\.set\('ts\.accessCode'/, 'không lưu mã kích hoạt trên máy');
+    assert.doesNotMatch(fn('api'), /'X-Access-Code': store/, 'request thường không gửi mã kích hoạt');
+    assert.doesNotMatch(app, /accessCode: store\.get/, 'hàng đợi không lưu mã kích hoạt');
+    assert.match(app, /generateKey\(\{ name: 'ECDSA', namedCurve: 'P-256' \}, false/, 'khoá bí mật không xuất ra được');
+    assert.match(fn('api'), /signHeaders\(/, 'mọi request được ký');
+    assert.match(fn('signHeaders'), /X-Signature/);
+    const html = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8');
+    assert.match(html, /id="onboardBorrowed"/, 'có lựa chọn máy mượn');
+  });
+
+  test('app đọc mã lỗi và mã tra cứu từ server', () => {
+    const body = fn('api');
+    assert.match(body, /requestId/);
+    assert.match(body, /\.code/);
   });
 
   test('Lỗi đã gặp: các nút gửi lên server bấm nhiều lần thì gửi nhiều lần', () => {

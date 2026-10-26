@@ -2,6 +2,43 @@
 
 Mỗi lần thay đổi đều ghi vào đây, mới nhất ở trên. Ghi kèm phiên bản Cloudflare nếu đã deploy.
 
+## 2026-10-26: Oval cỡ vừa phải, lời nhắc lại gần / lùi xa, khung giờ mở ca
+
+Chưa deploy.
+
+### Sửa lỗi
+- **Oval to hơn hẳn khuôn mặt trên máy tính** (bản `258135c6`).
+  - Nguyên nhân: cỡ oval đặt theo ước đoán (rộng 59% khung trên điện thoại, 49% trên máy tính), không theo cỡ mặt thật. Ngồi trước webcam, mặt chỉ chiếm khoảng 30–35% bề ngang khung.
+  - Cách sửa: oval đứng yên giữa khung làm khung hướng dẫn, người dùng đưa mặt vào. Máy tính: rộng 36% khung. Điện thoại: rộng 50% khung (cầm máy nên mặt gần camera hơn). Tỉ lệ 3:4.
+  - Thêm lời nhắc trên khung camera, tính từ khung mặt bộ nhận diện đo được (có tính phần video bị cắt và hình lật như gương): **"Lại gần camera hơn"** khi mặt nhỏ hơn 75% oval, **"Lùi ra xa một chút"** khi to hơn 125%, **"Đưa mặt vào giữa khung"** khi lệch quá 1/4 oval. Đã xác minh xong hoặc đang đăng ký khuôn mặt thì không nhắc.
+  - Cách tính nằm trong `public/guide.js`, có test (`test/guide.test.js`).
+  - Sửa test "Lỗi đã gặp" về oval: test cũ bắt oval rộng ít nhất 55% khung, dựa trên ước đoán sai. Test mới kiểm tra oval co theo khung camera, máy tính 32–42%, điện thoại 45–56%, và oval không chạy theo mặt.
+
+- **Đang tối vẫn chọn và check-in được ca sáng.**
+  - Nguyên nhân: hai ca luôn chọn được bất kể giờ; app chỉ chọn sẵn ca theo giờ, server không kiểm tra giờ.
+  - Cách sửa: mỗi ca chỉ mở check-in từ **2 giờ trước giờ vào tới hết ca**: ca sáng 06:00–17:00, ca tối 20:00–06:00 hôm sau. Ngoài khung, ô ca mờ đi kèm chữ "Mở lúc 06:00"; app tự chọn ca đang mở và tự mở khoá khi tới giờ. Từ 17:00 đến 20:00 chưa ca nào mở: nút chấm công ghi rõ giờ mở của từng ca. Server cũng từ chối check-in ngoài khung ("Ca sáng chỉ check-in từ 06:00 đến 17:00."), kể cả lượt gửi trễ (tính theo giờ chụp). Check-out không bị giới hạn (tăng ca).
+  - Test "ca sáng 00:01 thuộc ngày mới" đổi thành 06:00 vì 00:01 giờ đã ngoài khung ca sáng.
+- **Chuyển qua lại giữa các tab thì Bảng công tải lại cùng dữ liệu.**
+  - "Hôm nay": mỗi lần quay về Bảng công đều gọi `/api/logs` lại. Giờ dữ liệu tải trong 60 giây thì dùng lại; sau khi tự chấm công, gửi được lượt chờ hoặc bấm "Thử lại" thì vẫn tải mới ngay.
+  - "Theo khoảng ngày": app chỉ nhớ khoảng vừa xem, chọn khoảng khác rồi quay lại khoảng cũ thì tải lại. Giờ nhớ từng khoảng ngày trong 60 giây. Đăng xuất thì xoá hết.
+  - Đo trên bản chạy trên máy (đăng nhập quản trị): ở Chấm công 0 lần gọi; mở Bảng công 1 lần; chuyển Chấm công / Quản trị rồi quay lại 0 lần; tháng này → 7 ngày qua → tháng này: 2 lần (trước đây 3).
+
+- **Lỗi API chỉ có `error`, không có status, mã lỗi hay mã tra cứu; lỗi nội bộ lộ nguyên thông báo kỹ thuật** (vd `KV put() limit exceeded`).
+  - Giờ mọi lỗi có dạng `{ error, code, status, requestId }` kèm header `X-Request-Id`; bị giới hạn tần suất thì thêm `retryAfter` và header `Retry-After: 60`. `requestId` là `cf-ray` của request trên Cloudflare.
+  - Lỗi ngoài dự kiến trả `500 INTERNAL_ERROR` với câu báo chung; chi tiết ghi vào log kèm `requestId` để tra trong Observability. JSON hỏng trả `400 INVALID_REQUEST` thay vì 500.
+  - App kèm mã tra cứu vào câu báo lỗi máy chủ để người dùng gửi cho quản trị viên. Bảng mã lỗi ghi trong README (mục "Lỗi trả về từ API").
+
+- **Mở F12 là thấy mã kích hoạt, chép sang máy khác dùng được.** Mã nằm trong `localStorage`, trong từng lượt chờ gửi (IndexedDB) và trong header `X-Access-Code` của mọi request.
+  - Cách sửa: **đăng nhập theo máy**. Mã kích hoạt chỉ gửi một lần lúc kích hoạt (`POST /api/devices`), không lưu trên máy. Máy tạo cặp khoá ECDSA P-256, khoá bí mật không xuất ra được; mọi request ký bằng khoá đó (`X-Device`, `X-Timestamp`, `X-Signature`, hiệu lực 5 phút, gắn với đường dẫn). Đồng hồ máy lệch thì app lấy giờ server, ký lại một lần.
+  - Không giới hạn số máy (mượn điện thoại để tự chấm công). Thêm lựa chọn **"Máy mượn"** lúc kích hoạt: chấm công xong thì máy tự đăng xuất, quá 24 giờ thì hết hạn.
+  - Đăng xuất thì server thu hồi máy đó. Quản trị viên có nút **"Đăng xuất mọi máy (n)"**; danh sách nhân viên ghi số máy đang đăng nhập. Tạo mã kích hoạt mới cũng đăng xuất mọi máy.
+  - Máy đang dùng bản cũ tự chuyển sang cách mới ở lần mở app đầu tiên, kể cả lượt chờ gửi đang lưu mã; mất mạng thì để lần sau. Một máy giữ khoá của nhiều người để lượt chờ gửi của người đã đăng xuất vẫn gửi đúng tên, gửi xong thì thu hồi.
+  - Chi phí: mỗi lần kích hoạt / đăng xuất 1 lần ghi KV; máy mượn thêm 1 lần ghi khi chấm công. Không thêm lượt đọc (máy nằm trong bản ghi nhân viên; quản trị gốc đọc thêm 1 key).
+  - Đã thử trên trình duyệt với dữ liệu thử: chuyển máy cũ (mã bị xoá khỏi localStorage, khoá báo `InvalidAccessError` khi xuất), request chỉ còn 3 header chữ ký, đăng xuất thu hồi trên server, kích hoạt lại qua form, "Đăng xuất mọi máy" đưa máy về màn kích hoạt.
+
+### Thay đổi
+- Service worker lên `v16`.
+
 ## 2026-10-26: Chống spam, chống gửi ảnh lặp, báo lỗi rõ ràng
 
 Đã deploy: phiên bản `258135c6-aa9f-4fe8-86fa-d1488cc164cb` (2026-10-26).

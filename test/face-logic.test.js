@@ -575,13 +575,19 @@ describe('app.js dùng face-logic.js', () => {
     assert.match(mobile, /\.stage\{[^}]*svh/, 'khung camera giới hạn theo chiều cao màn hình');
   });
 
-  test('Lỗi đã gặp: khung oval nhỏ hơn khuôn mặt thật khi cầm điện thoại chụp (cố định 38% bề ngang)', () => {
-    // khung cũ là ellipse cố định trong SVG 400×300: rx 76 → chỉ 38% bề ngang, mặt người tràn ra ngoài
+  test('Lỗi đã gặp: khung oval cố định theo pixel trong SVG, không co theo khung camera (máy tính, điện thoại khác nhau)', () => {
+    // Khung cũ: ellipse cố định trong SVG 400×300 (rx 76). Lần sửa sau đặt 59% bề ngang thì lại quá to trên máy tính
+    // (mặt ngồi trước webcam chỉ ~30% khung). Giờ: oval đứng yên làm khung hướng dẫn, cỡ vừa phải theo từng loại màn hình.
     assert.doesNotMatch(html, /<ellipse class="ring"/);
-    const rule = html.match(/\.guide \.oval\{([^}]*)\}/)?.[1] || '';
-    const cqw = Number(rule.match(/width:min\((\d+)cqw/)?.[1]);
-    assert.ok(cqw >= 55, `oval rộng ít nhất 55% khung camera (đang ${cqw || '?'}%)`);
-    assert.match(rule, /aspect-ratio:3\/4/, 'giữ tỉ lệ khuôn mặt');
+    const pct = css => Number(css.match(/width:min\((\d+)cqw/)?.[1]);
+    const desk = pct(html.match(/\.guide \.oval\{([^}]*)\}/)?.[1] || '');
+    assert.ok(desk >= 32 && desk <= 42, `máy tính: oval rộng 32–42% khung (đang ${desk || '?'}%)`);
+    // chỉ các khối @media nhiều dòng (khối một dòng như {main{padding:16px}} làm regex chạy lan sang CSS máy tính)
+    const mobile = [...html.matchAll(/@media \(max-width:760px\)\{\n([\s\S]*?)\n  \}/g)].map(m => m[1]).join('\n');
+    const phone = pct(mobile.match(/\.guide \.oval\{([^}]*)\}/)?.[1] || '');
+    assert.ok(phone >= 45 && phone <= 56, `điện thoại (mặt gần camera hơn): oval rộng 45–56% khung (đang ${phone || '?'}%)`);
+    assert.match(html, /\.guide \.oval\{[^}]*aspect-ratio:3\/4/, 'giữ tỉ lệ khuôn mặt');
+    assert.doesNotMatch(html, /\.oval\.track/, 'oval đứng yên, không chạy theo mặt');
   });
 
   test('index.html nạp đủ các file logic dùng chung trước app.js', () => {

@@ -166,6 +166,48 @@ npm run dev
 
 Mở `http://localhost:8787`. Thêm `--test-scheduled` vào lệnh dev để thử cron qua `http://localhost:8787/__scheduled`.
 
+## Đăng nhập theo máy
+
+- Mã kích hoạt chỉ dùng để **kích hoạt một máy**, không lưu trên máy và không gửi kèm request thường (trước đây nằm trong `localStorage` và header mọi request, mở F12 là thấy).
+- Lúc kích hoạt, trình duyệt tạo cặp khoá ECDSA P-256. Khoá bí mật lưu trong IndexedDB ở dạng **không xuất ra được** (DevTools không đọc được). Server giữ khoá công khai trong bản ghi nhân viên.
+- Mọi request gửi `X-Device`, `X-Timestamp` và `X-Signature` (chữ ký của `thời điểm.method.đường dẫn`). Chép từ F12 sang máy khác không dùng được; chữ ký chỉ có hiệu lực 5 phút và chỉ cho đúng đường dẫn đó. Nội dung (ảnh, form) không nằm trong chữ ký.
+- **Không giới hạn số máy**: mượn điện thoại người khác thì nhập mã của mình. Tick **"Máy mượn"** để máy tự đăng xuất sau khi chấm công xong (hoặc sau 24 giờ). Server giữ 10 máy kích hoạt gần nhất mỗi người.
+- Quản trị viên: Sửa nhân viên → **Đăng xuất mọi máy** (vd mất điện thoại; mã kích hoạt giữ nguyên). **Tạo mã kích hoạt mới** cũng đăng xuất mọi máy.
+- Máy đang dùng bản cũ tự chuyển sang cách mới ở lần mở app đầu tiên (kể cả lượt chờ gửi đang lưu mã), rồi xoá mã khỏi máy.
+- `X-Access-Code` vẫn được nhận ở mọi API (dùng để kích hoạt và cho script quản trị). Vì mã kích hoạt kích hoạt được không giới hạn máy, giữ đường này không làm yếu đi: ai có mã thì đã dùng được rồi. Giữ kín mã kích hoạt như mật khẩu.
+
+## Lỗi trả về từ API
+
+Mọi lỗi của `/api/*` có cùng một dạng, kèm header `X-Request-Id` (và `Retry-After` khi bị giới hạn tần suất):
+
+```json
+{
+  "error": "Mã kích hoạt không đúng hoặc đã được đổi. Liên hệ quản trị viên để lấy mã mới.",
+  "code": "INVALID_ACCESS_CODE",
+  "status": 401,
+  "requestId": "8d1f2a3b4c5d6e7f-SIN"
+}
+```
+
+- `error`: câu báo cho người dùng (tiếng Việt). `code`: mã cho máy đọc, không đổi theo câu chữ. `requestId`: mã tra cứu, trên Cloudflare là `cf-ray` của request.
+- Lỗi ngoài dự kiến (KV, lỗi code…) trả `500 INTERNAL_ERROR` với câu báo chung, không lộ chi tiết nội bộ. Chi tiết được ghi log kèm `requestId`: tìm mã đó trong Workers → Observability.
+
+| Status | code | Khi nào |
+|---|---|---|
+| 400 | `INVALID_REQUEST` | Dữ liệu gửi lên sai (thiếu ảnh, quá 62 ngày, JSON hỏng…) |
+| 400 | `SHIFT_REQUIRED`, `SHIFT_CLOSED` | Chưa chọn ca; ca chưa mở check-in (sớm hơn 2 giờ trước giờ vào hoặc đã hết ca) |
+| 400 | `PUNCH_TOO_OLD` | Lượt chụp hơn 24 giờ trước |
+| 400 | `INVALID_FACE_DATA`, `INVALID_AVATAR`, `AVATAR_TOO_LARGE` | Dữ liệu khuôn mặt hoặc ảnh đại diện không hợp lệ |
+| 401 | `MISSING_ACCESS_CODE`, `INVALID_ACCESS_CODE` | Chưa nhập mã; mã sai hoặc đã đổi |
+| 401 | `DEVICE_REVOKED`, `INVALID_SIGNATURE`, `SIGNATURE_EXPIRED` | Máy đã đăng xuất / bị thu hồi; chữ ký sai; giờ máy lệch quá 5 phút (kèm `serverTime`, app tự chỉnh và gửi lại) |
+| 400 | `INVALID_DEVICE_KEY`, `ALREADY_ACTIVATED`, `NOT_A_DEVICE` | Khoá của máy hỏng; máy đã đăng nhập; đăng xuất từ request không phải của máy |
+| 403 | `ADMIN_ONLY`, `ROOT_CANNOT_PUNCH`, `FORBIDDEN` | Không đủ quyền |
+| 404 | `NOT_FOUND` | Không có đường dẫn hoặc dữ liệu |
+| 409 | `SHIFT_IN_PROGRESS`, `ALREADY_CHECKED_IN`, `NOT_CHECKED_IN`, `CHECKOUT_LIMIT`, `CHECKOUT_ORDER` | Sai thứ tự chấm công |
+| 429 | `RATE_LIMITED` | Gọi quá nhanh, chờ `retryAfter` giây |
+| 500 | `INTERNAL_ERROR`, `CONFIG_MISSING` | Lỗi máy chủ; thiếu cấu hình (vd `BOT_TOKEN`) |
+| 502 / 503 | `TELEGRAM_ERROR`, `TELEGRAM_BUSY` | Telegram lỗi; Telegram đang giới hạn tốc độ (app tự gửi lại) |
+
 ## Giới hạn gói miễn phí
 
 - **Cloudflare Workers:** 100.000 lượt gọi/ngày.

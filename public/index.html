@@ -108,7 +108,10 @@
   .stage video,.stage canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
   /* Khung mặt: co theo khung camera (cỡ khuôn mặt khi cầm điện thoại ngang tầm mắt), không cố định theo pixel */
   .guide{position:absolute;inset:0;pointer-events:none;overflow:hidden}
-  .guide .oval{position:absolute;left:50%;top:50%;width:58%;width:min(60cqw,66cqh);aspect-ratio:3/4;transform:translate(-50%,-46%);border-radius:50%;box-shadow:0 0 0 200vmax rgba(7,10,8,.38)}
+  /* Oval đứng yên giữa khung, người dùng đưa mặt vào. Cỡ theo khoảng cách thường gặp: ngồi trước webcam mặt chiếm
+     khoảng 30–35% bề ngang khung; điện thoại cầm tay mặt gần camera hơn nên oval to hơn (xem mục điện thoại bên dưới).
+     Mặt to hoặc nhỏ hơn oval thì app nhắc lùi xa / lại gần (guide.js). */
+  .guide .oval{position:absolute;left:50%;top:50%;width:36%;width:min(36cqw,62cqh);aspect-ratio:3/4;transform:translate(-50%,-50%);border-radius:50%;box-shadow:0 0 0 200vmax rgba(7,10,8,.38)}
   .guide .oval::after{content:'';position:absolute;inset:0;border-radius:inherit;border:2.5px dashed rgba(255,255,255,.65);transition:border-color .2s}
   .stage[data-state="ok"] .oval::after{border:4px solid #4cc48a}
   .stage[data-state="unknown"] .oval::after{border:3px solid #f0ac45}
@@ -208,6 +211,7 @@
   @media (max-width:760px){
     .kiosk{gap:14px}
     .stage{aspect-ratio:auto;height:clamp(240px,48svh,460px);border-radius:16px}
+    .guide .oval{width:50%;width:min(50cqw,72cqh)}
     .person{min-height:0;gap:12px}
     .person .avatar{width:44px;height:44px;border-radius:10px}
     .p-name{font-size:18px}
@@ -542,6 +546,7 @@
   <div class="dlg-f">
     <button class="btn quiet danger" id="btnDeleteEmp" hidden>Xoá nhân viên</button>
     <button class="btn quiet" id="btnNewCode" hidden>Tạo mã kích hoạt mới</button>
+    <button class="btn quiet" id="btnRevokeDevices" hidden>Đăng xuất mọi máy</button>
     <span style="flex:1"></span>
     <button class="btn" data-close>Huỷ</button>
     <button class="btn ink" id="btnSaveEmp">Lưu nhân viên</button>
@@ -554,6 +559,7 @@
     <h2 id="onboardTitle">Kích hoạt Timesheet</h2>
     <p class="soft" style="margin:0 0 18px">Nhập mã kích hoạt quản trị viên gửi cho bạn. Mỗi máy chỉ cần nhập một lần.</p>
     <input class="input code-input" id="onboardKey" placeholder="VD: K7PM-3QXD" required autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Mã kích hoạt">
+    <label class="check" style="text-align:left"><input type="checkbox" id="onboardBorrowed"> Máy mượn: tự đăng xuất sau khi chấm công xong</label>
     <div id="onboardErr" class="note err" style="margin-top:10px;text-align:left" hidden></div>
     <button class="btn ink" id="btnActivate" style="width:100%;margin-top:14px;padding:12px">Kích hoạt</button>
   </form>
@@ -602,6 +608,7 @@
 <script src="shifts.js"></script>
 <script src="import.js"></script>
 <script src="retry.js"></script>
+<script src="guide.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

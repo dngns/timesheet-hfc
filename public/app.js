@@ -4,8 +4,9 @@ const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/mode
 const { CONFIG: FACE, ENROLL_STEPS, facePose, Verifier, Enroller, findDuplicate, checkUpload } = FaceLogic;
 const MAX_SAMPLES = ENROLL_STEPS.length;
 const { SORTS, DEFAULT_SORT, sortRows } = ReportSort;   // sắp xếp Bảng công (sort.js)
-const { SHIFTS, suggestShift, shiftLabel, shiftDateFor, isMissed } = Shifts;     // ca làm việc (shifts.js)
+const { SHIFTS, suggestShift, shiftLabel, shiftDateFor, isMissed, isShiftOpen, opensAt } = Shifts;     // ca làm việc (shifts.js)
 const { retryDelay, isRetryable, describeError } = Retry;                        // gửi lại lượt chờ (retry.js)
+const { ovalFor, fitHint, HINTS } = Guide;                                       // nhắc lại gần / lùi xa (guide.js)
 const shiftOf = l => SHIFTS[l?.shift] ? l.shift : 'sang'; // lượt cũ (trước khi có ca) tính là ca sáng
 const dmyhm = ts => { const d = new Date(ts); return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 // Vị trí lưu trong bảng công: "lat,lng,sai số" (GPS) hoặc "net:Thành phố, Quốc gia" (theo mạng)
@@ -86,7 +87,8 @@ addEventListener('offline', updateNet);
 updateNet();
 
 // ---------------- API ----------------
-class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
+// Lỗi từ server: { error, code, status, requestId } (xem errorResponse trong src/worker.js)
+class HttpError extends Error { constructor(status, msg, code, requestId) { super(msg); Object.assign(this, { status, code, requestId }); } }
 const statusOf = e => e instanceof HttpError ? e.status : 0;   // 0 = không tới được server (mất mạng)
 class QueuedBehind extends Error {}   // còn lượt cũ chưa gửi được: lượt mới phải xếp hàng sau để giữ thứ tự vào/ra
 // Khoá nút trong lúc gửi để bấm nhiều lần không gửi nhiều lần
@@ -96,14 +98,20 @@ async function busy(btn, fn, label = 'Đang gửi…') {
   btn.disabled = true; btn.textContent = label;
   try { return await fn(); } finally { btn.disabled = false; btn.innerHTML = html; }
 }
-async function api(path, opts = {}) {
-  const headers = { 'X-Access-Code': store.get('ts.accessCode') || '', ...(opts.headers || {}) };
+// opts.as: ký bằng máy của người khác trên cùng máy (lượt chờ gửi của người đã đăng xuất); opts.unsigned: không ký
+async function api(path, opts = {}, retried = false) {
+  const dev = opts.unsigned ? null : await getDevice(opts.as || store.get('ts.account'));
+  const headers = { ...(dev ? await signHeaders(dev, opts.method || 'GET', path) : {}), ...(opts.headers || {}) };
   const r = await fetch(path, { ...opts, headers });
   if (!r.ok) {
-    let msg = r.statusText;
-    try { msg = (await r.json()).error || msg; } catch {}
-    if (r.status === 401 && store.get('ts.accessCode') && !opts.keepSession) signOut(msg);   // mã bị đổi hoặc tài khoản bị xoá
-    throw new HttpError(r.status, msg);
+    let body = {};
+    try { body = await r.json(); } catch {}
+    // đồng hồ máy lệch quá 5 phút: lấy giờ server, ký lại và gửi lại một lần
+    if (body.code === 'SIGNATURE_EXPIRED' && body.serverTime && !retried) { clockSkew = body.serverTime - Date.now(); return api(path, opts, true); }
+    const msg = body.error || r.statusText, requestId = body.requestId || r.headers.get('X-Request-Id');
+    if (r.status === 401 && dev && !opts.keepSession) signOut(msg);   // máy bị thu hồi, mã bị đổi hoặc tài khoản bị xoá
+    // lỗi máy chủ: kèm mã tra cứu vào câu báo để người dùng gửi cho quản trị viên
+    throw new HttpError(r.status, r.status >= 500 && requestId ? `${msg} (mã tra cứu: ${requestId})` : msg, body.code, requestId);
   }
   return r.headers.get('Content-Type')?.includes('json') ? r.json() : r;
 }
@@ -112,23 +120,59 @@ async function api(path, opts = {}) {
 let qdb;
 function openQueue() {
   return new Promise((res, rej) => {
-    const r = indexedDB.open('timesheet-queue', 1);
-    r.onupgradeneeded = () => r.result.createObjectStore('queue', { keyPath: 'ts' });
+    const r = indexedDB.open('timesheet-queue', 2);
+    r.onupgradeneeded = () => {
+      const db = r.result;
+      if (!db.objectStoreNames.contains('queue')) db.createObjectStore('queue', { keyPath: 'ts' });
+      if (!db.objectStoreNames.contains('keys')) db.createObjectStore('keys', { keyPath: 'code' });   // khoá đăng nhập của máy
+    };
     r.onsuccess = () => res(qdb = r.result);
     r.onerror = () => rej(r.error);
   });
 }
-function qtx(mode, fn) {
+function qtx(mode, fn, storeName = 'queue') {
   return new Promise((res, rej) => {
-    const t = qdb.transaction('queue', mode);
-    const req = fn(t.objectStore('queue'));
+    const t = qdb.transaction(storeName, mode);
+    const req = fn(t.objectStore(storeName));
     t.oncomplete = () => res(req?.result);
     t.onerror = () => rej(t.error);
   });
 }
 const queueAll = () => qtx('readonly', s => s.getAll());
 
-// Mỗi lượt gửi bằng mã kích hoạt của chính người chấm (lưu kèm khi chụp),
+// ---------------- Đăng nhập theo máy ----------------
+// Mã kích hoạt chỉ gửi một lần lúc kích hoạt, không lưu trên máy (trước đây nằm trong localStorage và header mọi request,
+// mở F12 là thấy). Máy tạo cặp khoá ECDSA; khoá bí mật lưu trong IndexedDB ở dạng không xuất ra được, chỉ dùng để ký
+// từng request (X-Device, X-Timestamp, X-Signature; xem verifyDevice trong src/worker.js). Chép từ F12 sang máy khác
+// không dùng được. Một máy giữ được khoá của nhiều người (lượt chờ gửi của người đã đăng xuất vẫn gửi đúng tên).
+const ROOT_ACCOUNT = '#root';   // tài khoản quản trị gốc (ADMIN_KEY)
+let clockSkew = 0;              // giờ server − giờ máy (ms), chỉnh khi server báo SIGNATURE_EXPIRED
+const getDevice = code => qdb && code ? qtx('readonly', s => s.get(code), 'keys') : null;
+const delDevice = code => qdb ? qtx('readwrite', s => s.delete(code), 'keys') : null;
+const b64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
+async function signHeaders(dev, method, path) {
+  const u = new URL(path, location.origin), ts = Date.now() + clockSkew;
+  const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, dev.key, new TextEncoder().encode(`${ts}.${method}.${u.pathname}${u.search}`));
+  return { 'X-Device': dev.id, 'X-Timestamp': String(ts), 'X-Signature': b64(sig) };
+}
+// Kích hoạt máy bằng mã: trả về tài khoản (mã NV hoặc ROOT_ACCOUNT) và thông tin người dùng
+async function activateDevice(accessCode, borrowed = false) {
+  if (!window.crypto?.subtle || !qdb) throw new Error('Trình duyệt này không hỗ trợ đăng nhập an toàn. Mở app qua https bằng Chrome, Safari hoặc Brave bản mới.');
+  const kp = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
+  const pub = b64(await crypto.subtle.exportKey('raw', kp.publicKey));
+  const data = await api('/api/devices', { method: 'POST', unsigned: true, keepSession: true,
+    headers: { 'X-Access-Code': accessCode, 'Content-Type': 'application/json' }, body: JSON.stringify({ pub, borrowed }) });
+  const account = data.me.root ? ROOT_ACCOUNT : data.me.code;
+  await qtx('readwrite', s => s.put({ code: account, id: data.deviceId, key: kp.privateKey, borrowed }), 'keys');
+  return { me: data.me, account };
+}
+// Bỏ khoá của một người trên máy; revoke: báo server thu hồi máy này (đăng xuất chủ động)
+async function forgetDevice(account, revoke) {
+  if (revoke) { try { await api('/api/devices', { method: 'DELETE', as: account, keepSession: true }); } catch {} }
+  await delDevice(account);
+}
+
+// Mỗi lượt ký bằng khoá của chính người chấm (item.account, lưu kèm khi chụp),
 // để đổi người đăng nhập trên máy không làm lượt chờ gửi bị ghi công cho người khác.
 async function sendPunch(item) {
   const fd = new FormData();
@@ -138,10 +182,16 @@ async function sendPunch(item) {
   if (item.shift) fd.append('shift', item.shift);
   if (item.geo) { fd.append('lat', item.geo.lat); fd.append('lng', item.geo.lng); fd.append('acc', item.geo.acc); }
   fd.append('photo', item.blob, 'photo.jpg');
-  const accessCode = item.accessCode || (item.code === me?.code ? store.get('ts.accessCode') : null);
-  if (!accessCode) throw new HttpError(401, 'không còn mã kích hoạt của người này trên máy');
+  const account = item.account || item.code;
+  if (!(await getDevice(account))) throw new HttpError(401, 'người này đã đăng xuất khỏi máy');
   // lượt của người khác (đã đăng xuất) bị từ chối thì không được đăng xuất người đang dùng máy
-  return api('/api/punch', { method: 'POST', body: fd, headers: { 'X-Access-Code': accessCode }, keepSession: accessCode !== store.get('ts.accessCode') });
+  const res = await api('/api/punch', { method: 'POST', body: fd, as: account, keepSession: account !== store.get('ts.account') });
+  // máy mượn: server đã đăng xuất máy sau lượt chấm này
+  if (res.signedOut) {
+    await delDevice(account);
+    if (account === store.get('ts.account')) setTimeout(() => signOut('Máy mượn: đã tự đăng xuất sau khi chấm công.'), 4000);
+  }
+  return res;
 }
 
 let flushing = false;
@@ -165,11 +215,14 @@ async function flushQueue(force) {
         toast(`Bỏ lượt chấm công chờ gửi của ${item.name}: ${e.message}`, 'warn', 6000);
       }
       await qtx('readwrite', s => s.delete(item.ts));
+      // người đã đăng xuất mà máy giữ khoá chỉ để gửi nốt lượt chờ: gửi xong lượt cuối thì thu hồi máy và xoá khoá
+      const account = item.account || item.code;
+      if (account !== store.get('ts.account') && !(await queueAll()).some(q => (q.account || q.code) === account)) await forgetDevice(account, true);
     }
   } finally {
     flushing = false;
     // chỉ làm mới khi đã gửi được: vòng 30 giây này chạy cả khi hàng đợi trống và tab bị ẩn (mỗi lần tải bảng công tốn lệnh list KV)
-    if (sent) { toast(`Đã gửi ${sent} lượt chấm công lên Telegram`, 'ok'); await loadToday(); }
+    if (sent) { toast(`Đã gửi ${sent} lượt chấm công lên Telegram`, 'ok'); await loadToday({ force: true }); }
     else await renderQueue();
   }
 }
@@ -220,15 +273,18 @@ async function loadEmployees() {
   renderEmployees();
   renderToday();
 }
-function signOut(msg) {
-  store.del('ts.accessCode'); store.del('ts.me');
-  me = null; employees = []; todayLogs = []; verifier = new Verifier([]); openShift = null; lastShift = null; localPunch = null; chosenByUser = false;
+// revoke: đăng xuất chủ động (báo server thu hồi máy). Còn lượt chờ gửi của người này thì giữ khoá để gửi nốt.
+async function signOut(msg, { revoke = false } = {}) {
+  const account = store.get('ts.account');
+  store.del('ts.account'); store.del('ts.me'); store.del('ts.accessCode');
+  if (account && !(qdb && (await queueAll()).some(q => (q.account || q.code) === account))) forgetDevice(account, revoke);
+  me = null; employees = []; todayLogs = []; todayAt = 0; historyCache.clear(); historyKey = ''; verifier = new Verifier([]); openShift = null; lastShift = null; localPunch = null; chosenByUser = false;
   stopGeo();
   applyRole();
   openOnboarding(msg);
 }
 $('btnLogout').onclick = () => {
-  if (confirm('Đăng xuất khỏi máy này? Lần sau cần nhập lại mã kích hoạt.')) signOut();
+  if (confirm('Đăng xuất khỏi máy này? Lần sau cần nhập lại mã kích hoạt.')) signOut(undefined, { revoke: true });
 };
 
 function initials(name) {
@@ -286,9 +342,13 @@ function stageMsg({ spin = false, icon = false, title, text, retry } = {}) {
   $('btnRetryCam').textContent = retry?.label || '';
   $('btnRetryCam').onclick = retry?.run || null;
 }
+const pill = { state: 'loading', text: '' };
+let fit = null;   // lời nhắc vị trí mặt: 'near' | 'far' | 'center' (updateFit)
 function setPill(state, text) {
+  Object.assign(pill, { state, text });
   stage.dataset.state = state;
-  $('pillText').textContent = text;
+  // chưa xác minh xong mà mặt chưa vừa oval: lời nhắc vị trí quan trọng hơn
+  $('pillText').textContent = fit && state !== 'ok' && !enroll.open ? HINTS[fit] : text;
 }
 
 async function openStream() {
@@ -380,6 +440,7 @@ async function detectLoop() {
     if (modelsReady && cameraReady && video.readyState >= 2 && !document.hidden) {
       const det = await faceapi.detectSingleFace(video, detectorOpts()).withFaceLandmarks().withFaceDescriptor();
       lastDetection = det || null;
+      updateFit(det);
       const g = overlay.getContext('2d');
       g.clearRect(0, 0, overlay.width, overlay.height);
       if (enroll.open) {
@@ -396,6 +457,19 @@ async function detectLoop() {
     }
   } catch (e) { console.error(e); }
   setTimeout(detectLoop, 220);
+}
+
+// Mặt to / nhỏ / lệch so với oval hướng dẫn: nhắc ngay trên khung camera. Đã xác minh hoặc đang đăng ký thì không nhắc.
+function updateFit(det) {
+  let next = null;
+  if (det && !enroll.open) {
+    const r = stage.getBoundingClientRect(), o = stage.querySelector('.guide .oval').getBoundingClientRect();
+    const head = ovalFor(det.detection.box, { w: video.videoWidth, h: video.videoHeight }, { w: r.width, h: r.height });
+    next = fitHint(head, { cx: o.left - r.left + o.width / 2, cy: o.top - r.top + o.height / 2, w: o.width });
+  }
+  if (next === fit) return;
+  fit = next;
+  setPill(pill.state, pill.text);
 }
 
 // Đã nhận ra mặt nhưng chưa thấy cử động: nhắc quay nhẹ đầu (chặn ảnh/màn hình giơ trước camera)
@@ -487,13 +561,16 @@ function renderShift() {
   }
   // ca đã check-in trong ngày công tương ứng thì không check-in lại (mỗi ca chỉ 1 lần)
   const now = new Date(), used = k => lastShift?.shift === k && lastShift.shiftDate === shiftDateFor(k, ymd(now), now.getHours());
-  if (used(chosenShift)) chosenByUser = false;
+  // ca chỉ mở check-in từ 2 giờ trước giờ vào tới hết ca (shifts.js); ngoài khung thì khoá, ghi giờ mở
+  const closed = k => !isShiftOpen(k, now.getHours() * 60 + now.getMinutes());
+  const off = k => used(k) || closed(k);
+  if (off(chosenShift)) chosenByUser = false;
   if (!chosenByUser || !SHIFTS[chosenShift]) {
     const sug = suggestShift(now.getHours(), me.shift);
-    chosenShift = !used(sug) ? sug : Object.keys(SHIFTS).find(k => !used(k)) || null;
+    chosenShift = !off(sug) ? sug : Object.keys(SHIFTS).find(k => !off(k)) || null;
   }
   $('shiftOpts').innerHTML = Object.entries(SHIFTS).map(([k, s]) =>
-    `<button type="button" role="radio" aria-checked="${k === chosenShift}" data-shift="${k}" ${used(k) ? 'disabled' : ''}><b>${s.name}</b><span>${used(k) ? 'Đã chấm ca này' : `${s.start}–${s.end}`}</span></button>`).join('');
+    `<button type="button" role="radio" aria-checked="${k === chosenShift}" data-shift="${k}" ${off(k) ? 'disabled' : ''}><b>${s.name}</b><span>${used(k) ? 'Đã chấm ca này' : closed(k) ? `Mở lúc ${opensAt(k)}` : `${s.start}–${s.end}`}</span></button>`).join('');
 }
 $('shiftNow').onclick = e => {
   if (e.target.id !== 'btnSwitchShift') return;
@@ -538,15 +615,21 @@ function renderGeo() {
 // ---------------- Check-in / out ----------------
 let todayLogs = [];
 let pending = [];
-async function loadToday() {
+// Bảng công hôm nay vừa tải trong 60 giây thì chuyển tab qua lại không tải lại (mỗi lần tốn 1–2 lệnh list KV)
+const TODAY_FRESH_MS = 60 * 1000;
+let todayAt = 0;
+async function loadToday(opts) {
+  const force = opts?.force === true;   // sau khi chấm công / gửi được lượt chờ / bấm Thử lại
   // quản trị: bảng công hôm nay và hôm qua (ca tối đang làm qua nửa đêm); nhân viên: chỉ cần ca đang mở
   const errs = [];
   // Bảng công "Hôm nay" chỉ tải khi đang mở (mỗi lần tốn 1–2 lệnh list KV).
   // Ngày hôm qua chỉ cần trước 12:00, lúc ca tối hôm qua còn mở.
   if (isAdmin() && todayOpen()) {
-    const now = new Date(), from = now.getHours() < 12 ? ymd(addDays(now, -1)) : ymd(now);
-    try { todayLogs = await api(`/api/logs?from=${from}&to=${ymd(now)}`); }
-    catch (e) { errs.push('bảng công hôm nay: ' + describeError(statusOf(e), e.message)); }
+    if (force || Date.now() - todayAt > TODAY_FRESH_MS) {
+      const now = new Date(), from = now.getHours() < 12 ? ymd(addDays(now, -1)) : ymd(now);
+      try { todayLogs = await api(`/api/logs?from=${from}&to=${ymd(now)}`); todayAt = Date.now(); }
+      catch (e) { errs.push('bảng công hôm nay: ' + describeError(statusOf(e), e.message)); }
+    }
   }
   if (me && !me.root) {
     try { ({ open: openShift, last: lastShift } = await api('/api/status')); }
@@ -563,7 +646,7 @@ function showSyncWarn(errs) {
   $('syncWarn').hidden = !errs.length;
   $('syncWarn').firstChild.textContent = errs.length ? `Chưa cập nhật được ${errs.join('; ')}. Nút chấm công có thể chưa đúng. ` : '';
 }
-$('btnSyncRetry').onclick = () => busy($('btnSyncRetry'), loadToday, 'Đang tải…');
+$('btnSyncRetry').onclick = () => busy($('btnSyncRetry'), () => loadToday({ force: true }), 'Đang tải…');
 // Ô "lượt chờ gửi": số lượt, lý do lần gửi trước lỗi và giờ thử lại
 async function renderQueue() {
   pending = qdb ? await queueAll() : [];
@@ -605,11 +688,16 @@ function updatePunch() {
       : `${SHIFTS[shiftOf(open)].name}, vào lúc ${t5(open)}, đã làm ${dur(Date.now() - open.ts)}`;
   } else {
     label.textContent = 'Check-in';
-    if (!SHIFTS[chosenShift]) { btn.disabled = true; sub.textContent = 'Chọn ca ở bước 1'; }
+    if (!SHIFTS[chosenShift]) {
+      // chưa tới giờ check-in ca nào: nói rõ ca nào mở lúc mấy giờ
+      const next = Object.keys(SHIFTS).filter(k => !isShiftOpen(k, new Date().getHours() * 60 + new Date().getMinutes()));
+      btn.disabled = true;
+      sub.textContent = next.length === Object.keys(SHIFTS).length ? `Chưa tới giờ check-in. ${next.map(k => `${SHIFTS[k].name} mở lúc ${opensAt(k)}`).join(', ')}` : 'Chọn ca ở bước 1';
+    }
     else sub.textContent = `Bắt đầu ${shiftLabel(chosenShift)}`;
   }
 }
-setInterval(updatePunch, 15000);
+setInterval(() => { if (me && !me.root) renderShift(); updatePunch(); }, 15000);   // ca tự mở khi tới giờ
 
 function showStamp(kind, emp, when, note, msg) {
   const r = $('result');
@@ -639,7 +727,7 @@ async function punch() {
   try {
     const blob = await captureBlob(`${emp.code} – ${emp.name} · ${type === 'in' ? 'CHECK-IN' : 'CHECK-OUT'} · ${SHIFTS[shift].name}`, when);
     const item = {
-      code: emp.code, name: emp.name, type, ts: when.getTime(), time: hms(when), blob, accessCode: store.get('ts.accessCode'),
+      code: emp.code, name: emp.name, type, ts: when.getTime(), time: hms(when), blob, account: store.get('ts.account'),
       shift: type === 'in' ? shift : undefined, geo: geoFresh() ? { lat: geo.lat, lng: geo.lng, acc: geo.acc } : undefined,
     };
     try {
@@ -674,7 +762,7 @@ async function punch() {
     }
     cooldown = { code: emp.code, until: Date.now() + 6000 };
     setTimeout(updatePunch, 6100);
-    await loadToday();
+    await loadToday({ force: true });
   } finally {
     punching = false;
     updatePunch();
@@ -765,6 +853,8 @@ $('todayFilter').onclick = e => {
 
 // ---------------- Lịch sử ----------------
 let historyLogs = [], historyKey = '';
+// Kết quả từng khoảng ngày nhớ trong 60 giây: chọn lại khoảng vừa xem thì không tải lại
+const historyCache = new Map();
 function setPreset(p) {
   const d = new Date(), today = ymd(d);
   let from = today, to = today;
@@ -789,9 +879,12 @@ async function loadHistory(force) {
   if (from > to) { $('histSummary').textContent = 'Ngày bắt đầu đang sau ngày kết thúc. Chọn lại khoảng ngày.'; return; }
   const key = from + to;
   if (key === historyKey && !force) return renderHistory();
+  const hit = historyCache.get(key);
+  if (hit && !force && Date.now() - hit.at < TODAY_FRESH_MS) { historyLogs = hit.logs; historyKey = key; return renderHistory(); }
   $('histSummary').textContent = 'Đang tải bảng công…';
   try {
     historyLogs = await api(`/api/logs?from=${from}&to=${to}`);
+    historyCache.set(key, { at: Date.now(), logs: historyLogs });
     historyKey = key;
     renderHistory();
   } catch (e) { $('histSummary').textContent = 'Không tải được bảng công: ' + e.message; }
@@ -909,7 +1002,7 @@ function renderEmployees() {
     const n = e.descriptors?.length || 0;
     return `<li>${avatar(e, true)}<div class="l-main"><div class="l-title">${esc(e.name)}</div>
       <div class="l-sub">Mã ${esc(e.code)}, ${SHIFTS[e.shift]?.name || SHIFTS.sang.name}${e.tg ? ', @' + esc(e.tg) : ''}</div></div>
-      <div class="l-right">${e.role === ROLE_ADMIN ? '<span class="tag out">Quản trị</span>' : ''}${e.hasKey ? '' : '<span class="tag late">Chưa có mã kích hoạt</span>'}${n >= 3 ? `<span class="tag in">${n} mẫu khuôn mặt</span>` : n ? '<span class="tag late">Nên chụp lại khuôn mặt</span>' : '<span class="tag late">Chưa có khuôn mặt</span>'}
+      <div class="l-right">${e.role === ROLE_ADMIN ? '<span class="tag out">Quản trị</span>' : ''}${e.hasKey ? '' : '<span class="tag late">Chưa có mã kích hoạt</span>'}${e.devices ? `<span class="tag">${e.devices} máy</span>` : ''}${n >= 3 ? `<span class="tag in">${n} mẫu khuôn mặt</span>` : n ? '<span class="tag late">Nên chụp lại khuôn mặt</span>' : '<span class="tag late">Chưa có khuôn mặt</span>'}
       <button class="btn sm" data-edit="${esc(e.code)}">Sửa</button></div></li>`;
   }).join('') : `<li class="empty" style="display:block;border:0">${employees.length ? 'Không tìm thấy nhân viên.' : 'Chưa có nhân viên nào. Bấm Thêm nhân viên để đăng ký người đầu tiên.'}</li>`;
 }
@@ -1017,6 +1110,8 @@ function openEnroll(emp) {
   $('eRole').disabled = emp?.code === me?.code;   // không tự bỏ quyền quản trị của mình
   $('btnDeleteEmp').hidden = !emp || emp.code === me?.code;
   $('btnNewCode').hidden = !emp || emp.code === me?.code;
+  $('btnRevokeDevices').hidden = !emp?.devices || emp.code === me?.code;
+  $('btnRevokeDevices').textContent = `Đăng xuất mọi máy (${emp?.devices || 0})`;
   $('btnNewCode').textContent = emp?.hasKey ? 'Tạo mã kích hoạt mới' : 'Tạo mã kích hoạt';
   $('dupWarn').hidden = true;
   $('enrollSlot').append(stage);
@@ -1197,6 +1292,17 @@ $('btnNewCode').onclick = async () => {
     await loadEmployees();
   } catch (e) { toast(e.message, 'err', 6000); } }, 'Đang tạo…');
 };
+// Đăng xuất mọi máy của một người (vd mất điện thoại) mà không đổi mã kích hoạt
+$('btnRevokeDevices').onclick = async () => {
+  const emp = employees.find(e => e.code === enroll.editing);
+  if (!confirm(`Đăng xuất ${emp.name} khỏi mọi máy (${emp.devices})? Lần sau họ nhập lại mã kích hoạt cũ là dùng tiếp được.`)) return;
+  await busy($('btnRevokeDevices'), async () => { try {
+    await api('/api/devices?code=' + encodeURIComponent(emp.code), { method: 'DELETE' });
+    toast(`Đã đăng xuất ${emp.name} khỏi mọi máy`, 'ok');
+    $('enrollDlg').close();
+    await loadEmployees();
+  } catch (e) { toast(e.message, 'err', 6000); } }, 'Đang đăng xuất…');
+};
 function showCode(name, code) {
   $('codeFor').textContent = `Mã kích hoạt của ${name}`;
   $('codeValue').textContent = code;
@@ -1225,30 +1331,54 @@ function openOnboarding(err) {
   if (!$('onboardDlg').open) $('onboardDlg').showModal();
   $('onboardKey').focus();
 }
-$('onboardDlg').addEventListener('cancel', e => { if (!store.get('ts.accessCode')) e.preventDefault(); });
+$('onboardDlg').addEventListener('cancel', e => { if (!store.get('ts.account')) e.preventDefault(); });
 $('onboardForm').onsubmit = async e => {
   e.preventDefault();
   const key = $('onboardKey').value.trim();
   const ok = await busy($('btnActivate'), async () => {
     try {
-      const r = await fetch('/api/me', { headers: { 'X-Access-Code': key } });
-      const data = await r.json().catch(() => ({}));
-      // 429: nhập sai quá nhiều lần, server báo phải chờ bao lâu
-      if (!r.ok) return openOnboarding(r.status === 401 ? 'Mã kích hoạt không đúng. Kiểm tra lại với quản trị viên.' : describeError(r.status, data.error) || 'Không kích hoạt được, thử lại sau.');
-      me = data;
+      const r = await activateDevice(key, $('onboardBorrowed').checked);
+      me = r.me; store.set('ts.account', r.account);
       return true;
-    } catch {
-      return openOnboarding('Không có mạng. Kết nối mạng rồi thử lại.');
+    } catch (e) {
+      // 429: nhập sai quá nhiều lần, server báo phải chờ bao lâu
+      if (e instanceof HttpError) return openOnboarding(e.status === 401 ? 'Mã kích hoạt không đúng. Kiểm tra lại với quản trị viên.' : describeError(e.status, e.message));
+      return openOnboarding(e instanceof TypeError ? 'Không có mạng. Kết nối mạng rồi thử lại.' : e.message);
     }
   }, 'Đang kiểm tra…');
   if (!ok) return;
-  store.set('ts.accessCode', key);
+  $('onboardBorrowed').checked = false;
   store.set('ts.me', JSON.stringify(me));
   $('onboardDlg').close();
   toast(`Xin chào ${me.name}`, 'ok');
   applyRole();
   await loadToday(); flushQueue();
 };
+
+// Bản cũ lưu mã kích hoạt trong localStorage và trong từng lượt chờ gửi: đổi sang đăng nhập theo máy một lần rồi xoá mã.
+// Mất mạng thì giữ mã để thử lại lần mở app sau; mã sai (401) thì bỏ.
+async function migrateLegacyCodes() {
+  if (!qdb) return;
+  const codes = new Map();
+  const legacy = store.get('ts.accessCode');
+  if (legacy) codes.set(legacy, null);
+  const items = await queueAll();
+  for (const it of items) if (it.accessCode) codes.set(it.accessCode, null);
+  for (const code of codes.keys()) {
+    try { codes.set(code, (await activateDevice(code)).account); }
+    catch (e) { if (e instanceof HttpError && e.status === 401) codes.set(code, false); }
+  }
+  for (const it of items) {
+    const account = codes.get(it.accessCode);
+    if (account === undefined || account === null) continue;
+    const { accessCode, ...rest } = it;
+    await qtx('readwrite', s => s.put(account ? { ...rest, account } : rest));
+  }
+  if (legacy && codes.get(legacy) !== null) {
+    store.del('ts.accessCode');
+    if (codes.get(legacy)) store.set('ts.account', codes.get(legacy));
+  }
+}
 
 // ---------------- Điều hướng ----------------
 let view = 'kiosk';
@@ -1294,7 +1424,8 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catc
   pendingView = location.hash.slice(1);
   showView(pendingView);
   await openQueue().catch(() => {});
-  if (!store.get('ts.accessCode')) openOnboarding();
+  await migrateLegacyCodes();
+  if (!store.get('ts.account')) openOnboarding();
   else loadMe().then(loadToday).then(flushQueue);
   if (!window.faceapi) {
     stageMsg({ icon: true, title: 'Không tải được bộ nhận diện', text: 'Kiểm tra kết nối mạng rồi tải lại trang.', retry: { label: 'Tải lại trang', run: () => location.reload() } });

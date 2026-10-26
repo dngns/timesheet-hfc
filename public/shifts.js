@@ -30,7 +30,19 @@
   // Thiếu công: đã check-in mà tới hết ngày công của ca vẫn chưa check-out
   const isMissed = (row, now = Date.now()) => !!row.first && !row.last && now > dayEndsAt(row.date, row.shift);
 
-  const api = { SHIFTS, DEFAULT_SHIFT, suggestShift, shiftLabel, shiftDateFor, dayEndsAt, isMissed };
+  // Khung giờ check-in của ca: từ 2 giờ trước giờ vào tới hết ca (ca sáng 06:00–17:00, ca tối 20:00–06:00 hôm sau).
+  // Check-out không bị giới hạn khung giờ (tăng ca). Giống isShiftOpen trong src/worker.js.
+  const EARLY_MIN = 120;
+  const toMin = hhmm => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
+  const openMin = shift => (toMin(SHIFTS[shift].start) - EARLY_MIN + 1440) % 1440;
+  function isShiftOpen(shift, minuteOfDay) {
+    if (!SHIFTS[shift]) return false;
+    const from = openMin(shift), to = toMin(SHIFTS[shift].end);
+    return from < to ? minuteOfDay >= from && minuteOfDay < to : minuteOfDay >= from || minuteOfDay < to;
+  }
+  const opensAt = shift => { const t = openMin(shift); return String(Math.floor(t / 60)).padStart(2, '0') + ':' + String(t % 60).padStart(2, '0'); };
+
+  const api = { SHIFTS, DEFAULT_SHIFT, suggestShift, shiftLabel, shiftDateFor, dayEndsAt, isMissed, isShiftOpen, opensAt };
   root.Shifts = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

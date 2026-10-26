@@ -3,7 +3,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { SHIFTS, suggestShift, shiftLabel, shiftDateFor, dayEndsAt, isMissed } = require('../public/shifts.js');
+const { SHIFTS, suggestShift, shiftLabel, shiftDateFor, dayEndsAt, isMissed, isShiftOpen, opensAt } = require('../public/shifts.js');
 const { parseEmployees, parseTable, TEMPLATE } = require('../public/import.js');
 const { checkUpload } = require('../public/face-logic.js');
 
@@ -23,6 +23,18 @@ describe('Ca làm việc', () => {
     assert.equal(suggestShift(16, 'sang'), 'sang');
     assert.equal(suggestShift(16, 'xyz'), 'sang');
   });
+  test('Lỗi đã gặp: đang tối vẫn chọn được ca sáng; mỗi ca chỉ mở check-in từ 2 giờ trước giờ vào tới hết ca', () => {
+    const m = (h, mi = 0) => h * 60 + mi;
+    for (const [t, ok] of [[m(5, 59), false], [m(6), true], [m(8), true], [m(16, 59), true], [m(17), false], [m(21), false], [m(1), false]]) {
+      assert.equal(isShiftOpen('sang', t), ok, `ca sáng ${Math.floor(t / 60)}:${t % 60}`);
+    }
+    for (const [t, ok] of [[m(19, 59), false], [m(20), true], [m(23), true], [m(0, 30), true], [m(5, 59), true], [m(6), false], [m(12), false]]) {
+      assert.equal(isShiftOpen('toi', t), ok, `ca tối ${Math.floor(t / 60)}:${t % 60}`);
+    }
+    assert.equal(opensAt('sang'), '06:00');
+    assert.equal(opensAt('toi'), '20:00');
+  });
+
   test('ngày công: ca tối vào sau nửa đêm tính ngày hôm trước, giống server', () => {
     assert.equal(shiftDateFor('toi', '2026-11-01', 0), '2026-10-31');
     assert.equal(shiftDateFor('toi', '2026-10-26', 22), '2026-10-26');
