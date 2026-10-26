@@ -554,7 +554,7 @@ describe('app.js dùng face-logic.js', () => {
       ['tải ảnh khuôn mặt', /async function addUpload[\s\S]*checkUpload\(/],
       ['ảnh đại diện', /\/api\/avatar\?code=/],
     ]) assert.match(app, re, what);
-    for (const id of ['btnImport', 'importDlg', 'shiftOpts', 'geoInfo', 'btnUploadFace', 'faceFiles', 'eShift']) {
+    for (const id of ['btnImport', 'importDlg', 'shiftOpts', 'shiftNow', 'geoInfo', 'btnUploadFace', 'faceFiles', 'eShift']) {
       assert.match(html, new RegExp(`id="${id}"`), id);
       assert.match(app, new RegExp(`\\$\\('${id}'\\)`), 'app.js dùng ' + id);
     }
@@ -571,8 +571,16 @@ describe('app.js dùng face-logic.js', () => {
     assert.match(app, /document\.body\.classList\.toggle\('solo', !isAdmin\(\)\)/, 'nhân viên: ẩn thanh điều hướng một mục');
     const mobile = [...html.matchAll(/@media \(max-width:760px\)\{([\s\S]*?)\n  \}/g)].map(m => m[1]).join('\n');
     assert.match(mobile, /body\.solo \.nav\{display:none\}/);
-    assert.match(mobile, /\.punch\{position:sticky;bottom:/, 'nút chấm công dính đáy màn hình');
-    assert.match(mobile, /\.stage\{[^}]*svh/, 'khung camera giới hạn theo chiều cao màn hình');
+    // Cách sửa đầu tiên (nút dính đáy, camera 48svh) vẫn phải cuộn trên màn thấp, và cuộn thì camera trôi khỏi màn:
+    // không thấy khuôn mặt đã xác minh chưa. Giờ màn Chấm công cao đúng một màn hình, không cuộn: camera tràn kín màn,
+    // nút và chọn ca nổi trên video ở đáy, nên luôn nằm trong màn hình. Áp cho mọi cỡ màn (máy tính cũng vậy),
+    // nên kiểm tra CSS chung chứ không chỉ khối điện thoại.
+    const css = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+    const outside = css.replace(/@media[^{]*\{(?:[^{}]*\{[^}]*\})*[^{}]*\}/g, '');   // bỏ các khối @media
+    assert.match(outside, /body:has\(#view-kiosk:not\(\[hidden\]\)\)\{height:100svh;overflow:hidden;display:flex;flex-direction:column\}/, 'màn chấm công cao đúng một màn hình, không cuộn (mọi cỡ màn)');
+    assert.match(outside, /#stageHome \.stage\{position:absolute;inset:0;/, 'camera phủ kín màn hình (mọi cỡ màn)');
+    assert.match(outside, /\.side\{position:absolute;left:0;right:0;bottom:0;/, 'nút chấm công ghim ở đáy màn hình, nổi trên video (mọi cỡ màn)');
+    assert.doesNotMatch(css, /\.stage\{[^}]*height:clamp/, 'camera không đặt cứng chiều cao (cứng thì màn thấp đẩy nút xuống dưới)');
   });
 
   test('Lỗi đã gặp: khung oval cố định theo pixel trong SVG, không co theo khung camera (máy tính, điện thoại khác nhau)', () => {

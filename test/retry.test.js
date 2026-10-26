@@ -80,7 +80,12 @@ describe('app.js báo lỗi và chống bấm lặp', () => {
   test('Lỗi đã gặp: đang tối vẫn chọn được ca sáng (app không khoá ca ngoài khung giờ)', () => {
     const body = app.match(/function renderShift\(\) \{[\s\S]*?\n\}\n/)[0];
     assert.match(body, /isShiftOpen\(/);
-    assert.match(body, /Mở lúc/);
+    // ô ca ngoài khung giờ bị khoá và ghi giờ mở; app chỉ tự chọn ca đang mở và chưa chấm; không có thì nút khoá và ghi giờ mở
+    assert.match(body, /\$\{off\(k\) \? 'disabled' : ''\}/, 'ô ca ngoài khung giờ bị khoá');
+    assert.match(body, /closed\(k\) \? `Mở \$\{opensAt\(k\)\}`/, 'ô ca khoá ghi giờ mở');
+    assert.match(body, /chosenShift = !off\(sug\) \? sug : Object\.keys\(SHIFTS\)\.find\(k => !off\(k\)\) \|\| null/, 'chỉ chọn ca đang mở');
+    assert.match(body, /mở lúc \$\{opensAt\(k\)\}/, 'ghi giờ mở của ca');
+    assert.match(app.match(/function updatePunch\(\) \{[\s\S]*?\n\}\n/)[0], /act === 'in' && !SHIFTS\[chosenShift\]/, 'không có ca đang mở thì không check-in được');
   });
 
   test('Lỗi đã gặp: chuyển qua lại giữa các tab thì bảng công "Hôm nay" tải lại mỗi lần (tốn lệnh list KV)', () => {
@@ -115,5 +120,47 @@ describe('app.js báo lỗi và chống bấm lặp', () => {
       assert.match(app, new RegExp(`\\$\\('${id}'\\)\\.onclick = [\\s\\S]{0,400}?busy\\(`), id);
     }
     assert.match(app, /\$\('onboardForm'\)\.onsubmit = [\s\S]{0,300}?busy\(/, 'nút kích hoạt');
+  });
+
+  test('hỏi xác nhận bằng hộp của app, không dùng confirm() của trình duyệt (không sửa giao diện được, nút tiếng Anh)', () => {
+    assert.doesNotMatch(app.replace(/\/\/.*$/gm, ''), /(^|[^\w.])confirm\(/m, 'không còn confirm()');
+    const html = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8');
+    assert.match(html, /<dialog id="confirmDlg"/);
+    const logout = app.match(/\$\('btnLogout'\)\.onclick = async \(\) => \{[\s\S]*?\n\};\n/)[0];
+    assert.match(logout, /askConfirm\(\{[\s\S]*danger: true/, 'đăng xuất: nút chính màu đỏ');
+    assert.match(logout, /queueAll\(\)/, 'báo lượt chấm công chưa gửi');
+    assert.match(app, /\$\('confirmCancel'\)\.focus\(\)/, 'nút an toàn được chọn sẵn');
+  });
+
+  test('Lỗi đã gặp: bấm Esc hai lần thì hộp thoại kích hoạt đóng hẳn, không còn chỗ nào để nhập mã', () => {
+    // Chrome/Brave chỉ cho chặn Esc một lần (sự kiện cancel); lần thứ hai hộp thoại vẫn đóng.
+    // Chưa kích hoạt thì màn sau hộp thoại vô dụng: đóng là phải mở lại ngay.
+    assert.match(app, /\$\('onboardDlg'\)\.addEventListener\('close', \(\) => \{[^\n]*if \(!store\.get\('ts\.account'\)\)[^\n]*showModal\(\)/, 'đóng khi chưa kích hoạt thì mở lại');
+  });
+
+  test('Lỗi đã gặp: trên iPhone khó nhập mã kích hoạt (bàn phím che ô nhập, tự sửa chữ, phải đổi bàn phím để gõ dấu gạch)', () => {
+    const html = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8');
+    const input = html.match(/<input class="input code-input" id="onboardKey"[^>]*>/)[0];
+    assert.match(input, /autocorrect="off"/, 'iOS không tự sửa mã');
+    assert.match(input, /enterkeyhint="go"/, 'phím Return ghi Đi để gửi luôn');
+    assert.match(input, /placeholder="VD: [0-9A-Z]+"/, 'mã mẫu không có dấu gạch (server tự bỏ dấu gạch, khỏi đổi bàn phím)');
+    assert.match(html, /\.onboard\{[^}]*max-height:calc\(var\(--vvh/, 'hộp thoại không cao quá phần màn còn thấy khi bàn phím bật');
+    assert.match(app, /visualViewport\.addEventListener\('resize'/, 'app đo phần màn còn thấy');
+  });
+
+  test('Lỗi đã gặp: công tắc Máy mượn bật lên thì trắng tinh ở chế độ tối (nền màu mực trùng nút gạt trắng)', () => {
+    const html = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8');
+    assert.match(html, /\.switch:checked\{background:var\(--in\)/);
+    assert.doesNotMatch(html, /\.switch:checked\{background:var\(--ink\)/);
+  });
+
+  test('Lỗi đã gặp: nút Kích hoạt bấm được khi chưa nhập mã; nhập sai mã thì ô nhập bị xoá trắng', () => {
+    const html = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8');
+    assert.match(html, /<button class="btn ink" id="btnActivate"[^>]* disabled/, 'mới mở: nút khoá');
+    assert.match(app, /function syncActivate\(\) \{[^\n]*\$\('btnActivate'\)\.disabled = !\$\('onboardKey'\)\.value\.trim\(\)/, 'ô trống thì khoá nút');
+    assert.match(app, /\$\('onboardKey'\)\.addEventListener\('input', syncActivate\)/);
+    assert.match(app, /id="onboardClear"|\$\('onboardClear'\)/, 'có nút xoá nhanh mã');
+    const open = app.match(/function openOnboarding\([^)]*\) \{[\s\S]*?\n\}\n/)[0];
+    assert.match(open, /if \(!keep\) \$\('onboardKey'\)\.value = ''/, 'nhập sai thì giữ mã để sửa');
   });
 });

@@ -7,6 +7,7 @@ const { SORTS, DEFAULT_SORT, sortRows } = ReportSort;   // sắp xếp Bảng c�
 const { SHIFTS, suggestShift, shiftLabel, shiftDateFor, isMissed, isShiftOpen, opensAt } = Shifts;     // ca làm việc (shifts.js)
 const { retryDelay, isRetryable, describeError } = Retry;                        // gửi lại lượt chờ (retry.js)
 const { ovalFor, fitHint, HINTS } = Guide;                                       // nhắc lại gần / lùi xa (guide.js)
+const { DELAY_MS: AUTO_MS, canAuto, secondsLeft } = AutoPunch;                   // tự check-in sau khi xác minh (autopunch.js)
 const shiftOf = l => SHIFTS[l?.shift] ? l.shift : 'sang'; // lượt cũ (trước khi có ca) tính là ca sáng
 const dmyhm = ts => { const d = new Date(ts); return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 // Vị trí lưu trong bảng công: "lat,lng,sai số" (GPS) hoặc "net:Thành phố, Quốc gia" (theo mạng)
@@ -43,17 +44,9 @@ const wrapStore = s => ({
 const store = wrapStore(() => localStorage);
 
 // ---------------- Thông báo ----------------
-function toast(msg, type = 'info', ms = 3500) {
-  const el = document.createElement('div');
-  el.className = 'toast ' + type;
-  el.innerHTML = `<span></span><button class="t-x" aria-label="Đóng">×</button>`;
-  el.firstChild.textContent = msg;
-  const close = () => el.remove();
-  el.querySelector('.t-x').onclick = close;
-  $('toasts').append(el);
-  while ($('toasts').children.length > 3) $('toasts').firstChild.remove();
-  setTimeout(close, ms);
-}
+// kiểu Sonner (toast.js): máy tính góc dưới bên phải, điện thoại giữa phía trên. type: ok | err | warn | info
+const toaster = Toaster.create($('toasts'), { phone: () => matchMedia('(max-width:760px)').matches });
+function toast(msg, type = 'info', ms) { return toaster.show(msg, type, ms); }
 
 let audioCtx;
 function beep(ok) {
@@ -70,8 +63,11 @@ function beep(ok) {
 }
 
 // ---------------- Đồng hồ & mạng ----------------
+let tickMin = null;   // đổi phút thì cập nhật giờ trên nút chấm công (lần chạy đầu: nút chưa sẵn sàng)
 function tick() {
   const d = new Date();
+  if (tickMin !== null && d.getMinutes() !== tickMin) updatePunch();
+  tickMin = d.getMinutes();
   $('clockTime').innerHTML = `${pad(d.getHours())}:${pad(d.getMinutes())}<span class="sec">:${pad(d.getSeconds())}</span>`;
   const date = d.toLocaleDateString('vi-VN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
   if ($('clockDate').textContent !== date) $('clockDate').textContent = date[0].toUpperCase() + date.slice(1);
@@ -81,6 +77,9 @@ function updateNet() {
   const on = navigator.onLine;
   $('netChip').classList.toggle('off', !on);
   $('netChip').lastChild.textContent = on ? 'Trực tuyến' : 'Mất mạng';
+  document.body.classList.toggle('offline', !on);   // chấm ở góc ảnh đại diện (renderPerson)
+  const w = $('whoChip');
+  if (w.dataset.code) w.title = `Mã ${w.dataset.code} · ${on ? 'Trực tuyến' : 'Mất mạng'}`;
 }
 addEventListener('online', () => { updateNet(); flushQueue(true); });   // có mạng lại: thử ngay, không chờ giờ hẹn
 addEventListener('offline', updateNet);
@@ -253,8 +252,7 @@ async function loadMe() {
 function applyRole() {
   document.body.classList.toggle('solo', !isAdmin());   // nhân viên chỉ có màn chấm công: điện thoại ẩn thanh điều hướng
   document.querySelectorAll('[data-admin]').forEach(el => el.hidden = !isAdmin());
-  $('whoChip').hidden = $('btnLogout').hidden = !me;
-  $('whoChip').textContent = me ? me.name + (isAdmin() ? ' (quản trị)' : '') : '';
+  $('btnLogout').hidden = !me;
   if (isAdmin() && pendingView) { const v = pendingView; pendingView = null; showView(v); }
   if (!isAdmin() && view !== 'kiosk') showView('kiosk');
   // đổi người đăng nhập thì phải xác minh khuôn mặt lại từ đầu
@@ -283,8 +281,36 @@ async function signOut(msg, { revoke = false } = {}) {
   applyRole();
   openOnboarding(msg);
 }
-$('btnLogout').onclick = () => {
-  if (confirm('Đăng xuất khỏi máy này? Lần sau cần nhập lại mã kích hoạt.')) signOut(undefined, { revoke: true });
+// Hộp xác nhận của app (thay confirm() của trình duyệt). Trả về true nếu bấm nút chính.
+// extra: HTML đã thoát ký tự (vd thẻ tài khoản); note: câu lưu ý (nền vàng); danger: nút chính màu đỏ.
+function askConfirm({ title, text = '', ok = 'Đồng ý', cancel = 'Huỷ', danger = false, extra = '', note = '' }) {
+  const d = $('confirmDlg');
+  $('confirmTitle').textContent = title;
+  $('confirmText').textContent = text;
+  $('confirmText').hidden = !text;
+  $('confirmExtra').innerHTML = extra; $('confirmExtra').hidden = !extra;
+  $('confirmNote').textContent = note; $('confirmNote').hidden = !note;
+  $('confirmOk').textContent = ok; $('confirmCancel').textContent = cancel;
+  $('confirmOk').classList.toggle('danger', danger);
+  d.returnValue = '';
+  d.showModal();
+  $('confirmCancel').focus();   // nút an toàn được chọn sẵn
+  return new Promise(res => d.addEventListener('close', () => res(d.returnValue === 'ok'), { once: true }));
+}
+// bấm ra ngoài hộp (vùng mờ) thì huỷ
+$('confirmDlg').addEventListener('click', e => { if (e.target === $('confirmDlg')) $('confirmDlg').close('cancel'); });
+
+$('btnLogout').onclick = async () => {
+  // còn lượt chấm công chưa gửi: vẫn gửi sau khi đăng xuất (signOut giữ khoá máy cho tới khi gửi xong)
+  const waiting = qdb && me ? (await queueAll()).filter(q => (q.account || q.code) === store.get('ts.account')).length : 0;
+  const ok = await askConfirm({
+    title: 'Đăng xuất khỏi máy này?',
+    text: 'Lần sau cần nhập lại mã kích hoạt để dùng máy này.',
+    extra: me && !me.root ? `<div class="cf-acct">${avatar(me)}<div><b>${esc(me.name)}</b><span>Mã ${esc(me.code)}</span></div></div>` : '',
+    note: waiting ? `Còn ${waiting} lượt chấm công chưa gửi được. App vẫn tự gửi sau khi đăng xuất.` : '',
+    ok: 'Đăng xuất', cancel: 'Ở lại', danger: true,
+  });
+  if (ok) signOut(undefined, { revoke: true });
 };
 
 function initials(name) {
@@ -324,20 +350,28 @@ const emptyAvatar = '<div class="avatar blank" aria-hidden="true"><svg><use href
 
 // ---------------- Camera & nhận diện ----------------
 const video = $('video'), overlay = $('overlay'), stage = $('stage');
+// Điện thoại: cụm nút nổi trên đáy video. Báo chiều cao thật của cụm (đổi khi hiện cảnh báo vị trí, lượt chờ gửi…)
+// để oval canh giữa và co lại trong phần video còn thấy được (CSS đọc --dock).
+new ResizeObserver(([e]) => $('stageHome').style.setProperty('--dock', Math.round(e.target.offsetHeight) + 'px')).observe(document.querySelector('.kiosk .side'));
 let modelsReady = false, cameraReady = false;
 let current = null, currentDist = 1;   // nhân viên đang đứng trước camera
 let lastDetection = null;              // kết quả gần nhất (dùng khi đăng ký mẫu)
 let lastSeen = 0;
 let faceState = 'search';              // search | unknown | ok
 
-function stageMsg({ spin = false, icon = false, title, text, retry } = {}) {
+// icon: 'lock' (bị chặn) | 'missing' (không tìm thấy camera) | 'busy' (app khác đang dùng) | 'error' (lỗi khác); true = 'error'
+function stageMsg({ spin = false, icon = false, title, text, detail, retry } = {}) {
   const m = $('stageMsg');
+  stage.toggleAttribute('data-msg', !!title);   // đang báo: ẩn oval và dòng trạng thái
   if (!title) { m.hidden = true; return; }
   m.hidden = false;
   $('stageSpin').hidden = !spin;
   $('stageIcon').hidden = !icon;
+  if (icon) $('stageIcon').dataset.badge = icon === true ? 'error' : icon;
   $('stageMsgTitle').textContent = title;
   $('stageMsgText').textContent = text || '';
+  $('stageMsgDetail').hidden = !detail;
+  $('stageMsgDetail').textContent = detail || '';
   $('btnRetryCam').hidden = !retry;
   $('btnRetryCam').textContent = retry?.label || '';
   $('btnRetryCam').onclick = retry?.run || null;
@@ -363,24 +397,33 @@ async function openStream() {
   }
 }
 
-// Giải thích lỗi camera theo nguyên nhân thật, kèm mã lỗi gốc để báo lại khi cần
-async function cameraErrorText(e) {
+// Giải thích lỗi camera theo nguyên nhân thật: { text } là hướng dẫn, { detail } là mã lỗi gốc để báo lại khi cần,
+// { icon } là huy hiệu trên hình báo lỗi
+async function cameraError(e) {
   let perm = '';
   try { perm = (await navigator.permissions.query({ name: 'camera' })).state; } catch {}
-  const mac = /Mac/.test(navigator.platform);
+  const mac = /Mac/.test(navigator.platform) && navigator.maxTouchPoints < 2;
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Mac/.test(navigator.platform) && navigator.maxTouchPoints > 1);
+  const android = /Android/.test(navigator.userAgent);
+  // trình duyệt chặn camera: mỗi loại máy bật lại ở một chỗ khác nhau
+  const allow = ios ? 'Trên iPhone: mở Cài đặt → Safari → Camera, chọn Cho phép, rồi quay lại đây bấm Mở lại camera.'
+    : android ? 'Bấm biểu tượng ở đầu thanh địa chỉ → Quyền → Camera → Cho phép, rồi bấm Mở lại camera.'
+    : 'Bấm biểu tượng ổ khoá hoặc camera ở thanh địa chỉ, chọn Cho phép, rồi bấm Mở lại camera.';
   const systemBlocked = e.name === 'NotAllowedError' && (/system/i.test(e.message) || perm === 'granted');
   const text = systemBlocked
     ? (mac ? 'Trang đã được cho phép nhưng macOS đang chặn camera của trình duyệt. Mở Cài đặt hệ thống → Quyền riêng tư & Bảo mật → Camera, bật trình duyệt này, khởi động lại trình duyệt rồi bấm Mở lại camera.'
            : 'Trang đã được cho phép nhưng hệ điều hành đang chặn camera của trình duyệt. Bật quyền camera cho trình duyệt trong cài đặt máy, rồi bấm Mở lại camera.')
     : {
-      NotAllowedError: 'Trình duyệt đang chặn camera cho trang này. Bấm biểu tượng ổ khoá hoặc camera ở thanh địa chỉ, chọn Cho phép, rồi bấm Mở lại camera.',
-      NotFoundError: 'Không tìm thấy camera. Kiểm tra camera đã cắm hoặc đã bật chưa.',
+      NotAllowedError: `Trình duyệt đang chặn camera cho trang này. ${allow}`,
+      NotFoundError: ios || android ? 'Không tìm thấy camera trên máy này.' : 'Không tìm thấy camera. Kiểm tra camera đã cắm hoặc đã bật chưa.',
       NotReadableError: 'Camera đang bị ứng dụng hoặc tab khác dùng (Zoom, Meet, FaceTime…). Đóng ứng dụng đó rồi bấm Mở lại camera.',
       OverconstrainedError: 'Camera không hỗ trợ chế độ yêu cầu. Bấm Mở lại camera để thử lại.',
       SecurityError: 'Trình duyệt không cho dùng camera ở trang này. Mở trang qua https.',
       Insecure: 'Camera chỉ hoạt động khi mở trang qua https hoặc localhost.',
     }[e.name] || 'Lỗi không xác định khi mở camera.';
-  return `${text}\nMã lỗi: ${e.name}${e.message ? ' (' + e.message + ')' : ''}${perm ? ', quyền trang: ' + perm : ''}`;
+  const icon = systemBlocked || ['NotAllowedError', 'SecurityError', 'Insecure'].includes(e.name) ? 'lock'
+    : e.name === 'NotFoundError' ? 'missing' : e.name === 'NotReadableError' ? 'busy' : 'error';
+  return { icon, text, detail: `Mã lỗi: ${e.name}${e.message ? ' (' + e.message + ')' : ''}${perm ? ', quyền trang: ' + perm : ''}` };
 }
 
 async function startCamera() {
@@ -397,7 +440,7 @@ async function startCamera() {
   } catch (e) {
     cameraReady = false;
     console.error('Camera:', e);
-    stageMsg({ icon: true, title: 'Không mở được camera', text: await cameraErrorText(e), retry: { label: 'Mở lại camera', run: startCamera } });
+    stageMsg({ icon: true, title: 'Không mở được camera', ...await cameraError(e), retry: { label: 'Mở lại camera', run: startCamera } });
     setPill('loading', 'Camera chưa sẵn sàng');
   }
   updatePunch();
@@ -484,22 +527,29 @@ function setCurrent(emp, dist, seen) {
   const state = emp ? 'ok' : seen ? 'unknown' : 'search';
   if (emp === current && state === faceState) { currentDist = dist ?? currentDist; return; }
   current = emp || null; currentDist = dist ?? 1; faceState = state;
-  setPill(state, emp ? `Đã xác minh ${emp.name}` : seen ? 'Khuôn mặt không khớp' : 'Đang tìm khuôn mặt');
+  if (!emp) { stopAuto(); auto.attempted = false; }
+  // tên người đã ở thanh trên (máy đăng nhập theo người), trên camera chỉ báo trạng thái
+  setPill(state, emp ? 'Đã xác minh' : seen ? 'Khuôn mặt không khớp' : 'Đang tìm khuôn mặt');
   renderPerson();
   updatePunch();
 }
 
+// Người đang đăng nhập: ảnh đại diện (kèm chấm trạng thái mạng) và tên trên thanh trên.
+// Trạng thái khuôn mặt chỉ hiện trên khung camera.
 function renderPerson() {
-  const p = $('person');
-  if (!me) { p.innerHTML = ''; return; }
-  const head = (av, title, meta) => { p.innerHTML = `${av}<div><div class="p-name">${title}</div><div class="p-meta">${meta}</div></div>`; };
-  if (me.root) return head(emptyAvatar, 'Tài khoản quản trị gốc', 'Tài khoản này chỉ dùng để quản lý, không chấm công. Muốn chấm công, đăng nhập bằng mã của nhân viên.');
-  if (!me.descriptors?.length) return head(avatar(me), esc(me.name), 'Tài khoản chưa có khuôn mặt. Nhờ quản trị viên đăng ký khuôn mặt cho bạn.');
-  if (current) return head(avatar(me), esc(me.name), `Đã xác minh khuôn mặt`);
-  // lời nhắc quay đầu đã hiện ngay trên khung camera (nơi người dùng đang nhìn), ở đây không lặp lại
-  if (faceState === 'live') return head(avatar(me), esc(me.name), 'Đã nhận ra bạn, còn bước xác nhận người thật.');
-  if (faceState === 'unknown') return head(avatar(me), esc(me.name), `Khuôn mặt trước camera không khớp với ${esc(me.name)}. Nhìn thẳng vào camera, đủ ánh sáng.`);
-  head(avatar(me), esc(me.name), 'Nhìn vào camera để xác minh khuôn mặt.');
+  const w = $('whoChip');
+  w.hidden = !me;
+  $('netChip').hidden = !!me && !me.root;   // đã có ảnh đại diện thì chấm mạng nằm trên ảnh
+  if (!me) { w.innerHTML = ''; delete w.dataset.code; store.del('ts.who'); return; }
+  const chip = av => me.root ? '<span>Quản trị hệ thống</span>'
+    : `<span class="who-av">${av}<i class="net-dot"></i></span><span>${esc(me.name)}${isAdmin() ? ' (quản trị)' : ''}</span>`;
+  // lưu sẵn thanh trên (ảnh bằng chữ viết tắt: link ảnh thật chỉ dùng được trong phiên này) để lần mở sau đoạn script
+  // ngay sau <header> dựng lại trước lần vẽ đầu, thanh trên không bị xô lệch khi app.js chạy (CLS)
+  store.set('ts.who', JSON.stringify({ solo: !isAdmin(), net: !!me.root, html: chip(me.root ? '' : avatar({ ...me, hasAvatar: false }, true)) }));
+  if (me.root) { w.innerHTML = chip(); w.title = ''; delete w.dataset.code; return; }
+  w.dataset.code = me.code;
+  w.title = `Mã ${me.code} · ${navigator.onLine ? 'Trực tuyến' : 'Mất mạng'}`;
+  w.innerHTML = chip(avatar(me, true));
 }
 
 // Chụp khung hình (không lật) và in thông tin lên ảnh
@@ -523,6 +573,7 @@ let openShift = null;       // ca đang mở theo server: { shift, shiftDate, ts
 let lastShift = null;       // ca đã check-in gần nhất (kể cả đã đóng): { shift, shiftDate }
 let chosenShift = null;     // ca chọn cho lần check-in tới
 let chosenByUser = false;   // người dùng tự chọn thì không gợi ý đè lên
+let noShiftMsg = '';        // không có ca nào để check-in: lý do và giờ mở, hiện trên nút
 const OUTS_MAX = 3;          // mỗi ca: check-in 1 lần, check-out tối đa 3 lần (giống server)
 let localPunch = null;      // lượt vừa chấm trên máy này: { ts, at, open }, dùng khi server chưa kịp cập nhật
 const serverAt = o => o ? Math.max(o.ts, o.lastOut || 0) : 0;
@@ -549,16 +600,14 @@ function renderShift() {
   if (!open?.outs) switchShift = false;
   const act = nextAction(open);
   $('shiftPick').hidden = !show || act !== 'in';
-  $('shiftNow').hidden = !open;
+  // đang trong ca thì nút đã ghi ca và giờ vào; chỉ cần dòng này sau khi check-out (để chọn tăng ca hay vào ca khác)
+  $('shiftNow').hidden = !open?.outs;
   if (!show) return;
-  if (open) {
-    const s = SHIFTS[shiftOf(open)];
-    $('shiftNow').innerHTML = !open.outs
-      ? esc(`Đang trong ${s.name} ${s.start}–${s.end}, vào lúc ${dmyhm(open.ts)}.`)
-      : esc(`Đã check-out ${s.name} lúc ${dmyhm(open.lastOut).slice(11)}${open.outs > 1 ? ` (lần ${open.outs}/${OUTS_MAX})` : ''}. Nếu còn làm tăng ca, check-out lại khi về. `)
-        + `<button type="button" class="link" id="btnSwitchShift">${switchShift ? 'Quay lại check-out tăng ca' : 'Vào ca khác'}</button>`;
-    if (act === 'out') return;
+  if (open?.outs) {
+    $('shiftNow').innerHTML = esc('Nếu còn làm tăng ca, check-out lại khi về. ')
+      + `<button type="button" class="link" id="btnSwitchShift">${switchShift ? 'Quay lại check-out tăng ca' : 'Vào ca khác'}</button>`;
   }
+  if (act === 'out') return;
   // ca đã check-in trong ngày công tương ứng thì không check-in lại (mỗi ca chỉ 1 lần)
   const now = new Date(), used = k => lastShift?.shift === k && lastShift.shiftDate === shiftDateFor(k, ymd(now), now.getHours());
   // ca chỉ mở check-in từ 2 giờ trước giờ vào tới hết ca (shifts.js); ngoài khung thì khoá, ghi giờ mở
@@ -569,8 +618,12 @@ function renderShift() {
     const sug = suggestShift(now.getHours(), me.shift);
     chosenShift = !off(sug) ? sug : Object.keys(SHIFTS).find(k => !off(k)) || null;
   }
+  // chữ ngắn để ô vừa một hàng trên điện thoại
   $('shiftOpts').innerHTML = Object.entries(SHIFTS).map(([k, s]) =>
-    `<button type="button" role="radio" aria-checked="${k === chosenShift}" data-shift="${k}" ${off(k) ? 'disabled' : ''}><b>${s.name}</b><span>${used(k) ? 'Đã chấm ca này' : closed(k) ? `Mở lúc ${opensAt(k)}` : `${s.start}–${s.end}`}</span></button>`).join('');
+    `<button type="button" role="radio" aria-checked="${k === chosenShift}" data-shift="${k}" ${off(k) ? 'disabled' : ''}><b>${s.name}</b><span>${used(k) ? 'Đã chấm' : closed(k) ? `Mở ${opensAt(k)}` : `${s.start}–${s.end}`}</span></button>`).join('');
+  const done = Object.keys(SHIFTS).find(k => !closed(k) && used(k)), later = Object.keys(SHIFTS).filter(closed);
+  noShiftMsg = chosenShift ? '' : (done ? `Đã chấm ${SHIFTS[done].name.toLowerCase()} hôm nay. ` : 'Chưa tới giờ check-in. ')
+    + later.map(k => `${SHIFTS[k].name} mở lúc ${opensAt(k)}`).join(', ');
 }
 $('shiftNow').onclick = e => {
   if (e.target.id !== 'btnSwitchShift') return;
@@ -580,6 +633,7 @@ $('shiftNow').onclick = e => {
 $('shiftOpts').onclick = e => {
   const b = e.target.closest('[data-shift]'); if (!b) return;
   chosenShift = b.dataset.shift; chosenByUser = true;
+  stopAuto();
   renderShift(); updatePunch();
 };
 
@@ -601,15 +655,13 @@ function stopGeo() {
   geoWatch = null; geo = null; geoState = 'idle';
 }
 function renderGeo() {
+  // chỉ hiện khi có vấn đề: vị trí ổn hay đang lấy thì người chấm công không phải làm gì
   const el = $('geoInfo');
-  el.hidden = !me || me.root;
+  el.hidden = !me || me.root || (geoState !== 'denied' && geoState !== 'unavailable');
   if (el.hidden) return;
-  const ok = geoState === 'ok' && geoFresh();
-  el.classList.toggle('warn', geoState === 'denied' || geoState === 'unavailable');
-  el.lastChild.textContent = ok ? `Đã xác định vị trí, sai số khoảng ${geo.acc} m`
-    : geoState === 'denied' ? 'Chưa cho phép lấy vị trí. Lượt chấm công sẽ dùng vị trí ước lượng theo mạng; bật quyền vị trí cho trang để chính xác hơn.'
-    : geoState === 'unavailable' ? 'Máy không lấy được vị trí GPS. Lượt chấm công sẽ dùng vị trí ước lượng theo mạng.'
-    : 'Đang lấy vị trí…';
+  el.classList.add('warn');
+  el.lastChild.textContent = geoState === 'denied' ? 'Chưa cho phép lấy vị trí. Lượt chấm công sẽ dùng vị trí ước lượng theo mạng; bật quyền vị trí cho trang để chính xác hơn.'
+    : 'Máy không lấy được vị trí GPS. Lượt chấm công sẽ dùng vị trí ước lượng theo mạng.';
 }
 
 // ---------------- Check-in / out ----------------
@@ -672,31 +724,59 @@ function updatePunch() {
   }
   const open = currentOpen(), act = nextAction(open);
   const outLabel = open?.outs ? `Check-out tăng ca (lần ${open.outs + 1}/${OUTS_MAX})` : 'Check-out';
-  if (!current) {
-    btn.disabled = true; label.textContent = act === 'out' ? outLabel : 'Check-in';
-    sub.textContent = !me ? 'Cần kích hoạt app' : me.root ? 'Tài khoản quản trị gốc không chấm công'
-      : !canPunch() ? 'Chưa đăng ký khuôn mặt' : !modelsReady || !cameraReady ? 'Camera chưa sẵn sàng'
-      : faceState === 'live' ? 'Quay nhẹ đầu sang một bên' : faceState === 'unknown' ? 'Khuôn mặt không khớp' : 'Nhìn vào camera để xác minh';
-    return;
-  }
-  btn.disabled = punching;
-  if (act === 'out') {
-    btn.classList.add('out');
-    label.textContent = outLabel;
-    sub.textContent = open.outs
-      ? `${SHIFTS[shiftOf(open)].name}, đã check-out lúc ${dmyhm(open.lastOut).slice(11)}`
-      : `${SHIFTS[shiftOf(open)].name}, vào lúc ${t5(open)}, đã làm ${dur(Date.now() - open.ts)}`;
-  } else {
-    label.textContent = 'Check-in';
-    if (!SHIFTS[chosenShift]) {
-      // chưa tới giờ check-in ca nào: nói rõ ca nào mở lúc mấy giờ
-      const next = Object.keys(SHIFTS).filter(k => !isShiftOpen(k, new Date().getHours() * 60 + new Date().getMinutes()));
-      btn.disabled = true;
-      sub.textContent = next.length === Object.keys(SHIFTS).length ? `Chưa tới giờ check-in. ${next.map(k => `${SHIFTS[k].name} mở lúc ${opensAt(k)}`).join(', ')}` : 'Chọn ca ở bước 1';
-    }
-    else sub.textContent = `Bắt đầu ${shiftLabel(chosenShift)}`;
-  }
+  const now = new Date(), hm = `${pad(now.getHours())}:${pad(now.getMinutes())}`;   // giờ sẽ ghi vào lượt chấm
+  label.textContent = act === 'out' ? outLabel : 'Check-in';
+  btn.classList.toggle('out', act === 'out');
+  sub.textContent = act === 'out'
+    ? (open.outs
+      ? `${hm} · ${SHIFTS[shiftOf(open)].name}, đã check-out lúc ${dmyhm(open.lastOut).slice(11)}`
+      : `${hm} · ${SHIFTS[shiftOf(open)].name}, vào lúc ${t5(open)}, đã làm ${dur(Date.now() - open.ts)}`)
+    : SHIFTS[chosenShift] ? `${hm} · ${shiftLabel(chosenShift)}` : noShiftMsg;
+  // lý do không chấm được mà khung camera không nói: thay dòng dưới nút
+  const blocked = !me ? 'Cần kích hoạt app' : me.root ? 'Tài khoản quản trị gốc không chấm công'
+    : !canPunch() ? 'Chưa đăng ký khuôn mặt. Nhờ quản trị viên đăng ký giúp.' : '';
+  if (blocked) sub.textContent = blocked;
+  // khuôn mặt chưa xác minh (khung camera đang nhắc) hoặc không có ca để vào: nút mờ, vẫn ghi giờ và ca
+  btn.disabled = !!blocked || !current || punching || (act === 'in' && !SHIFTS[chosenShift]);
+  armAuto();
 }
+
+// Tự check-in: xác minh xong thì vòng sáng chạy quanh oval 3 giây rồi chấm; bấm Huỷ thì thôi.
+// Luật khi nào được tự chấm nằm trong autopunch.js (chỉ check-in, mỗi lần xác minh một lần).
+const auto = { timer: null, tick: null, until: 0, attempted: false };
+const autoOk = () => canAuto({
+  verified: !!current, canPunch: !$('btnPunch').disabled, action: nextAction(currentOpen()), attempted: auto.attempted,
+  dialogOpen: !!document.querySelector('dialog[open]'), hidden: document.hidden, enrolling: enroll.open,
+});
+function armAuto() {
+  if (!autoOk()) return stopAuto();
+  if (auto.timer) return showAuto();
+  auto.until = Date.now() + AUTO_MS;
+  stage.style.setProperty('--auto-ms', AUTO_MS + 'ms');
+  stage.classList.remove('counting'); void stage.offsetWidth; stage.classList.add('counting');   // chạy lại vòng từ đầu
+  auto.timer = setTimeout(fireAuto, AUTO_MS);
+  auto.tick = setInterval(showAuto, 250);
+  showAuto();
+}
+function stopAuto() {
+  if (!auto.timer) return;
+  clearTimeout(auto.timer); clearInterval(auto.tick); auto.timer = auto.tick = null;
+  stage.classList.remove('counting');
+  $('btnAutoCancel').hidden = true;
+  updatePunch();
+}
+function showAuto() {
+  $('btnAutoCancel').hidden = false;
+  $('punchSub').textContent = `Tự ghi sau ${secondsLeft(auto.until, Date.now())} giây`;   // ca đã hiện ở ô chọn ca ngay trên
+}
+function fireAuto() {
+  const ok = autoOk();
+  auto.attempted = true;   // thử một lần: bị từ chối thì không tự thử lại, người dùng bấm tay
+  stopAuto();
+  if (ok) punch();
+}
+$('btnAutoCancel').onclick = () => { auto.attempted = true; stopAuto(); };
+document.addEventListener('visibilitychange', () => { if (document.hidden) stopAuto(); });
 setInterval(() => { if (me && !me.root) renderShift(); updatePunch(); }, 15000);   // ca tự mở khi tới giờ
 
 function showStamp(kind, emp, when, note, msg) {
@@ -722,6 +802,7 @@ async function punch() {
   const type = nextAction(open);
   if (type === 'in' && !SHIFTS[chosenShift]) { toast('Chọn ca trước khi check-in', 'warn'); return; }
   const shift = type === 'in' ? chosenShift : shiftOf(open);
+  auto.attempted = true;
   punching = true; updatePunch();
   const f = $('flash'); f.classList.remove('go'); void f.offsetWidth; f.classList.add('go');
   try {
@@ -1116,7 +1197,7 @@ function openEnroll(emp) {
   $('dupWarn').hidden = true;
   $('enrollSlot').append(stage);
   video.play().catch(() => {});
-  current = null; faceState = 'search';
+  current = null; faceState = 'search'; stopAuto();
   $('enrollHud').hidden = false;
   renderEnroll();
   $('enrollDlg').showModal();
@@ -1256,7 +1337,7 @@ $('btnSaveEmp').onclick = async () => {
   const fresh = newSamples();
   const descriptors = fresh.length ? fresh : enroll.existing;
   if (!descriptors?.length) { toast('Chụp khuôn mặt hoặc tải ảnh lên trước khi lưu', 'warn'); return; }
-  if (fresh.length && checkDuplicate() && !confirm('Khuôn mặt giống một nhân viên khác. Vẫn lưu?')) return;
+  if (fresh.length && checkDuplicate() && !await askConfirm({ title: 'Khuôn mặt giống một nhân viên khác', text: 'Có thể đang chụp nhầm người. Vẫn lưu khuôn mặt này?', ok: 'Vẫn lưu', cancel: 'Chụp lại' })) return;
   $('btnSaveEmp').disabled = true;
   try {
     const r = await api('/api/employees', {
@@ -1274,7 +1355,7 @@ $('btnSaveEmp').onclick = async () => {
 };
 $('btnDeleteEmp').onclick = async () => {
   const code = enroll.editing, emp = employees.find(e => e.code === code);
-  if (!confirm(`Xoá nhân viên ${emp.name}? Lịch sử chấm công vẫn được giữ.`)) return;
+  if (!await askConfirm({ title: `Xoá nhân viên ${emp.name}?`, text: 'Lịch sử chấm công vẫn được giữ. Máy đang đăng nhập bằng tài khoản này sẽ bị đăng xuất.', ok: 'Xoá nhân viên', danger: true })) return;
   await busy($('btnDeleteEmp'), async () => { try {
     await api('/api/employees?code=' + encodeURIComponent(code), { method: 'DELETE' });
     toast(`Đã xoá nhân viên ${emp.name}`, 'ok');
@@ -1284,7 +1365,7 @@ $('btnDeleteEmp').onclick = async () => {
 };
 $('btnNewCode').onclick = async () => {
   const emp = employees.find(e => e.code === enroll.editing);
-  if (emp.hasKey && !confirm(`Tạo mã mới cho ${emp.name}? Mã cũ sẽ hết hiệu lực, máy đang dùng mã cũ phải nhập lại mã mới.`)) return;
+  if (emp.hasKey && !await askConfirm({ title: `Tạo mã kích hoạt mới cho ${emp.name}?`, text: 'Mã cũ hết hiệu lực ngay. Máy đang dùng mã cũ phải nhập lại mã mới.', ok: 'Tạo mã mới' })) return;
   await busy($('btnNewCode'), async () => { try {
     const r = await api('/api/employees/code?code=' + encodeURIComponent(emp.code), { method: 'POST' });
     $('enrollDlg').close();
@@ -1295,7 +1376,7 @@ $('btnNewCode').onclick = async () => {
 // Đăng xuất mọi máy của một người (vd mất điện thoại) mà không đổi mã kích hoạt
 $('btnRevokeDevices').onclick = async () => {
   const emp = employees.find(e => e.code === enroll.editing);
-  if (!confirm(`Đăng xuất ${emp.name} khỏi mọi máy (${emp.devices})? Lần sau họ nhập lại mã kích hoạt cũ là dùng tiếp được.`)) return;
+  if (!await askConfirm({ title: `Đăng xuất ${emp.name} khỏi mọi máy?`, text: `${emp.devices} máy đang đăng nhập. Lần sau họ nhập lại mã kích hoạt cũ là dùng tiếp được.`, ok: 'Đăng xuất mọi máy', danger: true })) return;
   await busy($('btnRevokeDevices'), async () => { try {
     await api('/api/devices?code=' + encodeURIComponent(emp.code), { method: 'DELETE' });
     toast(`Đã đăng xuất ${emp.name} khỏi mọi máy`, 'ok');
@@ -1324,14 +1405,31 @@ $('btnReport').onclick = () => busy($('btnReport'), async () => {
 });
 
 // ---------------- Kích hoạt bằng mã riêng ----------------
-function openOnboarding(err) {
+// keep: nhập sai mã thì giữ mã đã gõ (bôi đen sẵn để sửa) thay vì bắt gõ lại từ đầu
+function openOnboarding(err, { keep = false } = {}) {
   $('onboardErr').hidden = !err;
   $('onboardErr').textContent = err || '';
-  $('onboardKey').value = '';
+  if (!keep) $('onboardKey').value = '';
+  syncActivate();
   if (!$('onboardDlg').open) $('onboardDlg').showModal();
   $('onboardKey').focus();
+  if (keep) $('onboardKey').select();
 }
+// chưa nhập mã thì nút Kích hoạt khoá; có mã thì hiện nút × xoá nhanh
+function syncActivate() { $('btnActivate').disabled = !$('onboardKey').value.trim(); $('onboardClear').hidden = !$('onboardKey').value; }
+$('onboardKey').addEventListener('input', syncActivate);
+// iOS: bàn phím bật lên che nửa dưới màn mà trang không cuộn được (màn chấm công khoá cuộn). Báo chiều cao phần màn
+// còn thấy cho CSS (--vvh) để hộp thoại kích hoạt không cao quá phần đó, và cuộn ô nhập vào chỗ thấy được.
+if (window.visualViewport) {
+  const vvh = () => document.documentElement.style.setProperty('--vvh', Math.round(visualViewport.height) + 'px');
+  visualViewport.addEventListener('resize', () => { vvh(); if (document.activeElement === $('onboardKey')) $('onboardKey').scrollIntoView({ block: 'center' }); });
+  vvh();
+}
+$('onboardClear').onclick = () => { $('onboardKey').value = ''; syncActivate(); $('onboardKey').focus(); };
 $('onboardDlg').addEventListener('cancel', e => { if (!store.get('ts.account')) e.preventDefault(); });
+// Chrome/Brave chỉ cho chặn Esc một lần: lần Esc thứ hai hộp thoại vẫn đóng. Chưa kích hoạt thì mở lại ngay,
+// không để người dùng kẹt ở màn chấm công không dùng được.
+$('onboardDlg').addEventListener('close', () => { if (!store.get('ts.account')) requestAnimationFrame(() => { if (!$('onboardDlg').open) { $('onboardDlg').showModal(); $('onboardKey').focus(); } }); });
 $('onboardForm').onsubmit = async e => {
   e.preventDefault();
   const key = $('onboardKey').value.trim();
@@ -1342,10 +1440,11 @@ $('onboardForm').onsubmit = async e => {
       return true;
     } catch (e) {
       // 429: nhập sai quá nhiều lần, server báo phải chờ bao lâu
-      if (e instanceof HttpError) return openOnboarding(e.status === 401 ? 'Mã kích hoạt không đúng. Kiểm tra lại với quản trị viên.' : describeError(e.status, e.message));
-      return openOnboarding(e instanceof TypeError ? 'Không có mạng. Kết nối mạng rồi thử lại.' : e.message);
+      if (e instanceof HttpError) return openOnboarding(e.status === 401 ? 'Mã kích hoạt không đúng. Kiểm tra lại với quản trị viên.' : describeError(e.status, e.message), { keep: true });
+      return openOnboarding(e instanceof TypeError ? 'Không có mạng. Kết nối mạng rồi thử lại.' : e.message, { keep: true });
     }
   }, 'Đang kiểm tra…');
+  syncActivate();   // busy() vừa mở khoá nút: khoá lại nếu ô đang trống
   if (!ok) return;
   $('onboardBorrowed').checked = false;
   store.set('ts.me', JSON.stringify(me));
@@ -1417,6 +1516,14 @@ $('installBtn').onclick = async () => {
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
 // ---------------- Khởi động ----------------
+// Bộ nhận diện (~1,3MB): đã preload trong <head>, nạp sau app.js để giao diện (kích hoạt, nút bấm) phản hồi ngay
+const FACE_API = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/dist/face-api.js';   // giống CDN trong sw.js
+const loadFaceApi = () => window.faceapi ? Promise.resolve() : new Promise((res, rej) => {
+  const s = document.createElement('script');
+  s.src = FACE_API; s.crossOrigin = 'anonymous'; s.onload = res; s.onerror = rej;
+  document.head.append(s);
+});
+
 (async () => {
   const today = ymd(new Date());
   $('fFrom').value = today.slice(0, 8) + '01'; $('fTo').value = today;
@@ -1427,6 +1534,7 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catc
   await migrateLegacyCodes();
   if (!store.get('ts.account')) openOnboarding();
   else loadMe().then(loadToday).then(flushQueue);
+  await loadFaceApi().catch(() => {});
   if (!window.faceapi) {
     stageMsg({ icon: true, title: 'Không tải được bộ nhận diện', text: 'Kiểm tra kết nối mạng rồi tải lại trang.', retry: { label: 'Tải lại trang', run: () => location.reload() } });
     return;

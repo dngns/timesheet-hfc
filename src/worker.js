@@ -194,6 +194,9 @@ async function rateLimit(env, binding, key, message) {
 async function api(req, env, url) {
   const p = url.pathname, m = req.method;
   await rateLimit(env, 'RL_IP', clientIp(req), 'Quá nhiều yêu cầu từ mạng này. Chờ 1 phút rồi thử lại.');
+  // Số đo Core Web Vitals từ máy người dùng (public/vitals.js), gửi lúc rời trang nên không ký được: không cần đăng nhập.
+  // Chỉ ghi log (Observability), không ghi KV, nên không tốn hạn mức ghi 1.000 lần/ngày.
+  if (p === '/api/vitals' && m === 'POST') return vitals(req);
   const user = await authenticate(req, env);
   const isAdmin = user.role === ROLE_ADMIN;
   const needAdmin = () => { if (!isAdmin) throw httpError(403, 'Chỉ quản trị viên được dùng chức năng này', 'ADMIN_ONLY'); };
@@ -731,6 +734,30 @@ function dateRange(from, to) {
   return out;
 }
 // Lỗi có chủ đích: status HTTP, mã lỗi cho máy đọc (code) và câu báo cho người dùng (message).
+// Nhận một gói số đo, chỉ giữ đúng các trường đã biết (chữ cắt ngắn, số làm tròn) rồi ghi một dòng log
+const VITALS = ['TTFB', 'FCP', 'LCP', 'CLS', 'INP'];
+async function vitals(req) {
+  const raw = await req.text();
+  if (raw.length > 4096) throw httpError(413, 'Gói số đo quá lớn', 'TOO_LARGE');
+  let d;
+  try { d = JSON.parse(raw); } catch { throw httpError(400, 'Gói số đo không hợp lệ', 'INVALID_REQUEST'); }
+  const str = (v, n = 120) => typeof v === 'string' ? v.slice(0, n) : undefined;
+  const num = v => typeof v === 'number' && Number.isFinite(v) ? Math.round(v * 1000) / 1000 : undefined;
+  const pick = (o, keys) => o && typeof o === 'object' ? Object.fromEntries(keys.map(([k, f]) => [k, f(o[k])]).filter(([, v]) => v !== undefined)) : undefined;
+  const metrics = {};
+  for (const name of VITALS) {
+    const x = d?.metrics?.[name];
+    if (!x || num(x.value) === undefined) continue;
+    metrics[name] = pick(x, [['value', num], ['rating', str], ['nav', str], ['target', v => str(v, 200)], ['url', v => str(v, 200)], ['type', str],
+      ['ttfb', num], ['loadDelay', num], ['loadTime', num], ['renderDelay', num], ['largest', num], ['at', num],
+      ['inputDelay', num], ['processing', num], ['presentation', num], ['styleLayout', num],
+      ['script', v => pick(v, [['url', u => str(u, 200)], ['fn', str], ['invoker', str], ['subpart', str], ['ms', num]])]]);
+  }
+  if (!Object.keys(metrics).length) return new Response(null, { status: 204 });
+  console.log(JSON.stringify({ type: 'web-vitals', id: str(d.id, 40), device: str(d.device, 10), view: str(d.view, 20), net: str(d.net, 10), ua: str(req.headers.get('user-agent'), 160), metrics }));
+  return new Response(null, { status: 204 });
+}
+
 function httpError(status, message, code = DEFAULT_CODES[status] || 'ERROR', extra = {}) {
   return Object.assign(new Error(message), { status, code, expose: true }, extra);
 }

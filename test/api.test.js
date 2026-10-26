@@ -57,11 +57,11 @@ afterEach(() => { globalThis.fetch = realFetch; mock.timers.reset(); });
 const vn = (s) => Date.parse(s + '+07:00');
 function setNow(s) { mock.timers.reset(); mock.timers.enable({ apis: ['Date'], now: vn(s) }); }
 
-async function call(method, path, { code, json, form, headers = {}, cf, ip } = {}) {
+async function call(method, path, { code, json, form, headers = {}, cf, ip, body: raw } = {}) {
   const h = { ...headers };
   if (ip) h['CF-Connecting-IP'] = ip;
   if (code) h['X-Access-Code'] = code;
-  let body;
+  let body = raw;   // raw: thân yêu cầu thô (vd JSON hỏng)
   if (json !== undefined) { body = JSON.stringify(json); h['Content-Type'] = 'application/json'; }
   if (form) { body = new FormData(); for (const [k, v] of Object.entries(form)) body.append(k, v); }
   const req = new Request('https://ts.test' + path, { method, headers: h, body });
@@ -1142,4 +1142,36 @@ describe('Lịch tự động', () => {
 test('đường dẫn không phải API thì trả về giao diện', async () => {
   const r = await worker.fetch(new Request('https://ts.test/index.html'), env);
   assert.equal(await r.text(), 'asset');
+});
+
+describe('Số đo Core Web Vitals (/api/vitals)', () => {
+  const sample = { id: 'abc', device: 'phone', view: 'kiosk', net: '4g', metrics: {
+    LCP: { value: 1830, rating: 'good', target: 'main>#stage', loadDelay: 12, secret: 'x' },
+    INP: { value: 240, rating: 'needs-improvement', inputDelay: 180, processing: 30, presentation: 30, script: { url: 'https://cdn/face-api.js', fn: 'detect', ms: 170, extra: 1 } },
+    CLS: { value: 0.04, rating: 'good', target: '.msg-card' },
+    HACK: { value: 1 },
+  } };
+  test('không cần đăng nhập, chỉ ghi một dòng log, không ghi KV (không tốn hạn mức ghi)', async () => {
+    const logs = mock.method(console, 'log', () => {});
+    const before = env.KV.puts || 0;
+    const r = await call('POST', '/api/vitals', { json: sample });
+    assert.equal(r.status, 204);
+    assert.equal(env.KV.puts || 0, before, 'không ghi KV');
+    assert.equal(logs.mock.callCount(), 1);
+    const line = JSON.parse(logs.mock.calls[0].arguments[0]);
+    logs.mock.restore();
+    assert.equal(line.type, 'web-vitals');
+    assert.deepEqual(Object.keys(line.metrics).sort(), ['CLS', 'INP', 'LCP'], 'bỏ số đo lạ');
+    assert.equal(line.metrics.LCP.secret, undefined, 'bỏ trường lạ');
+    assert.equal(line.metrics.INP.script.fn, 'detect');
+    assert.equal(line.metrics.INP.script.extra, undefined);
+  });
+  test('gói quá lớn hoặc hỏng thì từ chối; không có số đo nào thì không ghi gì', async () => {
+    assert.equal((await call('POST', '/api/vitals', { json: { metrics: { LCP: { value: 1, target: 'x'.repeat(5000) } } } })).status, 413);
+    assert.equal((await call('POST', '/api/vitals', { body: '{', headers: { 'Content-Type': 'application/json' } })).status, 400);
+    const logs = mock.method(console, 'log', () => {});
+    assert.equal((await call('POST', '/api/vitals', { json: { metrics: {} } })).status, 204);
+    assert.equal(logs.mock.callCount(), 0);
+    logs.mock.restore();
+  });
 });

@@ -2,6 +2,110 @@
 
 Mỗi lần thay đổi đều ghi vào đây, mới nhất ở trên. Ghi kèm phiên bản Cloudflare nếu đã deploy.
 
+## 2026-10-27: Màn Chấm công: camera tràn màn, tự check-in, bớt phần thừa, blueprint Trước/Sau
+
+Chưa deploy. Làm trên nhánh `feature/dang-nhap-theo-may`, sau commit `20fde5c`.
+
+### Sửa lỗi
+- **Kéo thông báo thì nó đi theo tay tới tận thanh trên.** Bản đầu cho thẻ đi theo tay mọi hướng, không giới hạn. Giờ hướng không dùng để tắt bị cản như Sonner (xem mục Thông báo bên dưới). Có test "Lỗi đã gặp".
+- **Màn điện thoại thấp phải cuộn mới tới nút chấm công, mà cuộn thì camera trôi khỏi màn: không thấy khuôn mặt đã xác minh chưa.**
+  - Nguyên nhân: camera cao cố định 48% màn hình, dưới nó là khối tên, ô chọn ca, nút, dòng vị trí và đồng hồ. Ở 375×667 trang dài 812px; nút dính đáy (`position:sticky`) nên đè lên nhãn "2. Check-in".
+  - Cách sửa: **camera tràn kín cửa sổ** như app camera, trên mọi cỡ màn (điện thoại, máy tính bảng, máy tính), và màn không bao giờ cuộn. Thanh trên (ảnh, tên, đăng xuất), ô chọn ca, nút chấm công và cảnh báo vị trí nổi trên video; cụm nút ở đáy có lớp nền tối mờ cho dễ đọc. Màn rộng thì cụm nút ở giữa, rộng tối đa 560px. Thanh điều hướng của quản trị cũng nằm trên video.
+  - Oval canh giữa phần video còn thấy được, giữa dòng trạng thái và cụm nút. Cụm nút cao lên (ví dụ khi hiện cảnh báo vị trí) thì oval tự nhỏ lại: app đo chiều cao cụm nút bằng `ResizeObserver` và báo cho CSS qua `--dock`.
+  - Oval giữ cỡ cũ theo loại màn: máy tính rộng tối đa 36% khung (ngồi trước webcam), điện thoại 50% (cầm gần).
+  - Đã đo: 1920×1000, 1440×900, 768×1024, 390×844, 375×667 và 360×520 không cuộn; nút nằm trọn trong màn; oval không bị dòng trạng thái hay cụm nút che, kể cả khi có cảnh báo vị trí (ở 360×520 lúc đó oval rộng 98px).
+  - Đổi test "Lỗi đã gặp" về lỗi này sang kiểm tra cách sửa mới: màn cao `100svh` và không cuộn, camera phủ kín màn, cụm nút ghim ở đáy màn hình, camera không đặt cứng chiều cao. Test cũ kiểm tra nút `position:sticky`, mà chính cách đó vẫn phải cuộn trên màn thấp.
+- **Bản gộp làm ô "Ca sáng / Mở lúc 06:00" bị xuống dòng trên điện thoại** (ô chọn ca gọn một hàng không đủ chỗ cho chữ "Mở lúc"). Ô khoá giờ ghi gọn "Mở 06:00", "Đã chấm"; đã đo ở 360px không tràn.
+
+- **Bấm Esc hai lần thì hộp thoại "Kích hoạt Timesheet" đóng hẳn, không còn chỗ nào để nhập mã** (trên web). App chặn Esc ở sự kiện `cancel`, nhưng Chrome/Brave chỉ cho chặn một lần; lần thứ hai hộp thoại vẫn đóng. Giờ hộp thoại đóng khi máy chưa kích hoạt thì mở lại ngay. Đã thử: Esc ba lần liên tiếp vẫn còn hộp thoại, con trỏ ở ô nhập mã. Có test "Lỗi đã gặp".
+- **Nút "Kích hoạt" bấm được khi chưa nhập mã; nhập sai mã thì ô nhập bị xoá trắng.** Giờ ô trống thì nút khoá; nhập sai thì giữ nguyên mã và bôi đen sẵn để sửa. Có test "Lỗi đã gặp".
+- **Khó nhập mã kích hoạt trên iPhone.** Mấy nguyên nhân cộng lại:
+  - Bàn phím iOS bật lên che nửa dưới hộp thoại (ô nhập và nút Kích hoạt) mà trang không cuộn được, vì màn chấm công khoá cuộn. Giờ trên điện thoại hộp thoại neo lên trên và không cao quá phần màn còn thấy (app đo bằng `visualViewport`, báo cho CSS qua `--vvh`); phần dư cuộn được trong hộp thoại.
+  - iOS có thể tự sửa mã (autocorrect) hoặc chèn dấu cách khi chạm gợi ý: tắt `autocorrect`.
+  - Phải đổi sang bàn phím số mới gõ được dấu gạch, trong khi server đã tự bỏ dấu gạch và tự viết hoa. Mã mẫu trong ô đổi thành "VD: K7PM3QXD" (không dấu gạch).
+  - Phím Return ghi "Đi" (`enterkeyhint="go"`) để gửi luôn, không phải tìm nút Kích hoạt.
+  - Đã thử ở khung 375×360 (giống lúc bàn phím bật): ô nhập không bị che, hộp thoại cuộn tới nút Kích hoạt được. Chưa thử trên iPhone thật. Có test "Lỗi đã gặp".
+- **Công tắc "Máy mượn" bật lên thì trắng tinh ở chế độ tối**: nền công tắc dùng màu mực, ở chế độ tối là gần trắng, trùng nút gạt trắng. Giờ bật là nền xanh (màu "đang vào ca" của app) cả ở chế độ sáng lẫn tối. Có test "Lỗi đã gặp".
+- **Màn "Không mở được camera" lộn xộn trên điện thoại.** Nội dung đè lên oval nét đứt phía sau; nút "Mở lại camera" chữ trắng trên nền sáng gần như không đọc được và bị ô chọn ca che một phần; mã lỗi kỹ thuật nằm ngay trong câu hướng dẫn; biểu tượng camera không hiện.
+  - Giờ là một thẻ gọn canh giữa phần màn giữa thanh trên và cụm nút: hình báo lỗi, tiêu đề, một câu hướng dẫn, nút "Mở lại camera" nền trắng chữ tối. Mã lỗi gốc tách thành một dòng nhỏ mờ bên dưới để báo lại cho quản trị viên. Lúc đang báo lỗi hay đang tải thì ẩn oval và dòng trạng thái.
+  - Hình báo lỗi thay cho biểu tượng camera gạch chéo: khung quét mặt của logo, khuôn mặt mờ bên trong, khung thở nhẹ (tắt khi máy bật giảm chuyển động). Huy hiệu ở góc cho biết nguyên nhân: ổ khoá (bị chặn quyền, trang không chạy https), máy quay có gạch chéo (không tìm thấy camera; không dùng dấu hỏi vì dễ bị tưởng là ảnh không tải được), đồng hồ (app khác đang dùng camera), dấu chấm than (lỗi khác, kể cả không tải được bộ nhận diện).
+  - Trình duyệt chặn camera: hướng dẫn bật lại theo từng loại máy (iPhone: Cài đặt → Safari → Camera; Android: biểu tượng đầu thanh địa chỉ → Quyền → Camera; máy tính: biểu tượng ổ khoá ở thanh địa chỉ).
+- **Dòng trạng thái ("Đã xác minh", "Khuôn mặt không khớp"…) lơ lửng cách xa oval.** Dòng này ghim ở đỉnh màn, còn oval canh giữa phần video, nên giữa hai thứ có khoảng trống lớn. Giờ dòng trạng thái gắn ngay trên đỉnh oval (cách 11px) và đi theo oval khi oval đổi cỡ.
+- **Chấm trạng thái mạng ở góc ảnh đại diện bị cắt mất một phần**: luật cắt tên dài thành "…" trúng cả khung bọc ảnh. Giờ luật đó chỉ áp cho tên.
+
+### Thêm
+- **Tự check-in sau khi xác minh khuôn mặt.** Xác minh xong (cả bước quay nhẹ đầu), một vòng sáng chạy quanh oval trong 3 giây rồi tự ghi lượt check-in; dòng dưới nút ghi "Tự ghi sau 3 giây". Cạnh nút có nút **Huỷ**; bấm nút chấm công (hoặc phím Space) thì ghi ngay.
+  - Chỉ tự check-in, không bao giờ tự check-out: mở app giữa ca để xem giờ không được ghi ra ca.
+  - Mỗi lần xác minh chỉ tự chấm một lần: đã Huỷ, đã bấm tay, hoặc lần tự chấm bị từ chối thì không tự thử lại. Mất mặt khỏi khung (hoặc người khác vào) thì dừng đếm ngay; lần xác minh sau được tự chấm lại.
+  - Không tự chấm khi đang mở hộp thoại, đang đăng ký khuôn mặt hay app chạy nền; đổi ca trong lúc đếm thì đếm lại từ đầu.
+  - Vẫn qua đúng hàm chấm công cũ, nên vẫn kiểm tra xác minh còn mới, khung giờ ca, chặn bấm lặp.
+  - Luật nằm trong `public/autopunch.js`, có test (`test/autopunch.test.js`). Đã thử trên trình duyệt (thay hàm gửi bằng hàm giả): đếm, Huỷ, tự chấm đúng một lần, mất mặt rồi xác minh lại thì đếm lại.
+
+### Thêm
+- **Đo Core Web Vitals của người dùng thật** (`public/vitals.js`, thư viện `web-vitals` 6.2.3 của Google bản attribution, tự host ở `public/vendor/` kèm giấy phép Apache-2.0):
+  - Đo TTFB, FCP, LCP, CLS, INP kèm nguyên nhân: phần tử LCP và các giai đoạn (chờ server, chờ tải, chờ vẽ); phần tử gây dịch chuyển lớn nhất; ba phần của INP (input delay, processing, presentation delay) và đoạn script chạy lâu nhất.
+  - Gửi một gói lúc rời trang bằng `fetchLater()` (Chrome 135+; trình duyệt khác dùng bản thay thế: `fetch` keepalive / `sendBeacon` khi trang bị ẩn).
+  - Server: `POST /api/vitals` không cần đăng nhập (gói gửi lúc rời trang không ký được), giới hạn 4KB, chỉ giữ đúng các trường đã biết, ghi một dòng log `web-vitals` để xem ở Workers → Observability. Không ghi KV nên không tốn hạn mức ghi. Có test (`test/api.test.js`).
+  - Đã thử trên trình duyệt: rời trang thì server nhận đủ TTFB, FCP, LCP, CLS, INP.
+
+### Thay đổi
+- **Tải trang nhanh hơn** (theo hướng dẫn hiệu năng của web.dev):
+  - Font Google không còn chặn hiển thị: nạp bằng `preload` rồi đổi sang stylesheet khi tải xong (có `<noscript>` dự phòng). Trước đây trình duyệt phải chờ tải xong CSS từ `fonts.googleapis.com` mới vẽ được gì. Bỏ weight 600 của Big Shoulders Display (không dùng).
+  - Bộ nhận diện `face-api.js` (~1,3MB) không còn chặn mã của app: tải trước bằng `<link rel="preload" as="script">` rồi app tự nạp sau khi đã dựng giao diện. Trước đây hộp kích hoạt và các nút chưa phản hồi cho tới khi trình duyệt chạy xong file này. Mô hình (~4,3MB) vì thế cũng bắt đầu tải sau giao diện, bớt tranh băng thông với font.
+- **Giữ dịch chuyển bố cục (CLS) lúc mở app ở ~0,04** (đo trên khung 375×667, máy chặn quyền vị trí; ngưỡng tốt là 0,1). Trang vẽ lần đầu sớm hơn (font không chặn) làm các lần xô lệch vốn có trước lần vẽ đầu bị tính vào CLS (lên ~0,15); đã gỡ các nguồn đó nên CLS về lại ngang trước khi sửa:
+  - Thanh trên không còn xô lệch khi app chạy: đoạn script nhỏ ngay sau thanh trên dựng sẵn ảnh, tên, ẩn chữ Timesheet từ lần dùng trước (`ts.who` trong bộ nhớ máy), trước lần vẽ đầu.
+  - Cảnh báo vị trí nổi ngay trên cụm nút thay vì nằm trong cụm, nên hiện ra không đẩy chọn ca và nút lên.
+  - Thẻ báo trên khung camera ("Đang tải…", "Không mở được camera") có bề ngang cố định và neo theo mép trên; vòng xoay và hình báo lỗi cùng một ô 96px, nên đổi trạng thái không làm thẻ co giãn.
+  - Còn lại: ô chọn ca hiện ra lúc app chạy làm vùng nền của cụm nút cao lên (~0,026; nút không dời chỗ), và chữ trong thẻ báo đổi độ dài (~0,01).
+- Số đo trên máy chạy thử (server trên máy, font và thư viện đã có trong cache, CPU Mac) không thấy khác biệt: trước FCP 64ms / LCP 84ms, sau FCP 44–60ms / LCP 84–108ms. Lợi ích của hai thay đổi trên chỉ hiện ra khi mạng chậm và máy yếu; số thật lấy từ log `web-vitals` sau khi deploy.
+- **Lighthouse, chế độ điện thoại** (4G chậm: độ trễ 150ms, 1,6Mbps; CPU chậm 4 lần; 5 lần mỗi bản, lấy trung vị; Lighthouse 12.8.2 trên Brave headless; trang tĩnh không có server, máy mới nên hiện hộp kích hoạt, không có camera):
+
+  | | Trước | Sau |
+  |---|---|---|
+  | Điểm hiệu năng | 78 (dao động 43–98) | 98 (98–100) |
+  | FCP | 1,74s | 1,06s |
+  | LCP | 5,55s (dao động 1,7–26s) | 2,28s (1,5–2,3s) |
+  | Speed Index | 1,83s | 1,13s |
+  | TBT | 67ms | 69ms |
+  | CLS | 0,070 | 0,027 |
+
+  Bản trước có lần LCP lên 5,5s và 26s vì thư viện nhận diện (~1,3MB) tải đồng bộ chặn cả trang; bản sau không còn tài nguyên chặn hiển thị nên ổn định. Phần tử LCP của bản sau là dòng chữ báo lỗi camera, xuất hiện khi app chạy xong; ngoài đời có camera thì phần tử LCP khác. TBT không đổi vì việc nặng (nhận diện) chạy sau khi tải trang.
+- **Hộp xác nhận của app thay cho `confirm()` của trình duyệt** (trước đây hiện "localhost cho biết…", nút OK/Cancel tiếng Anh, không sửa giao diện được). Dùng cho đăng xuất, xoá nhân viên, tạo mã kích hoạt mới, đăng xuất mọi máy, và lưu khi khuôn mặt giống người khác.
+  - Máy tính: hộp giữa màn. Điện thoại: trượt lên từ đáy màn, nút to xếp chồng, nút huỷ ở dưới cùng như iOS.
+  - Nút an toàn ("Ở lại", "Huỷ") được chọn sẵn; nút xoá / đăng xuất màu đỏ; bấm ra ngoài hoặc Esc là huỷ.
+  - Hộp đăng xuất có thẻ tài khoản (ảnh, tên, mã NV), và báo nếu còn lượt chấm công chưa gửi ("App vẫn tự gửi sau khi đăng xuất").
+- **Thông báo (toast) làm lại theo kiểu Sonner** (`public/toast.js`, có test `test/toast.test.js`):
+  - Thẻ nền sáng, bo góc, viền mảnh, bóng nhẹ; biểu tượng theo loại ở bên trái: dấu tích xanh (xong), dấu × đỏ (lỗi), tam giác vàng (cảnh báo), chữ i (thông tin). Trước đây là hộp tối có viền màu bên trái.
+  - Xếp chồng: thông báo mới nằm trước, 2 cái cũ ló mép phía sau và nhỏ dần; rê chuột (máy tính) hoặc chạm (điện thoại) thì xoè ra đọc đủ.
+  - Tự tắt sau 4 giây (hoặc thời gian riêng của từng thông báo); đang xoè hoặc app chạy nền thì dừng đếm.
+  - Trượt vào từ mép màn, mờ dần khi tắt. Máy tính có nút × nhỏ ở góc khi rê chuột.
+  - Vuốt để tắt theo đúng cách của Sonner 2.0.7 (đọc từ mã nguồn): khoá trục theo chiều kéo đầu tiên; hướng được phép tắt (góc dưới phải: xuống hoặc sang phải; giữa phía trên: lên) thì thẻ đi theo tay; hướng khác bị cản, đi tối đa ~20px rồi bật về. Tắt khi kéo từ 45px hoặc hất nhanh hơn 0,11 px/ms; lúc tắt thẻ trượt tiếp một thân theo hướng vuốt rồi mờ đi (200ms). Bấm nút hay đang bôi đen chữ thì không vuốt.
+  - Vị trí: máy tính góc dưới bên phải, điện thoại giữa phía trên (dưới tai thỏ). Trước đây ở giữa đáy màn trên mọi cỡ.
+  - Thông báo lỗi đọc ngay cho trình đọc màn hình (`role="alert"`), loại khác đọc khi rảnh (`role="status"`).
+- **Hộp thoại kích hoạt.** Ô nhập mã có nút × xoá nhanh (hiện khi ô có chữ). Lựa chọn "Máy mượn" đổi từ ô đánh dấu trần thành một hàng có tiêu đề, mô tả ("Tự đăng xuất ngay sau khi chấm công xong") và công tắc gạt; bấm cả hàng được, bật thì hàng có viền xanh.
+- **Màu focus** của ô nhập và vòng focus bàn phím đổi từ tím (`#4a3db0`, không có ở chỗ nào khác trong app) sang màu mực của nút chính, áp cho toàn app.
+- **Chọn ca gọn.** Bỏ nhãn "1. Chọn ca / 2. Check-in"; mỗi ô một dòng (tên ca bên trái, giờ hoặc giờ mở bên phải), cao 50px thay vì 74px. Phần chọn ca từ 136px còn 50px. Không có ca nào để check-in thì nút khoá và ghi lý do cùng giờ mở ("Chưa tới giờ check-in. Ca sáng mở lúc 06:00, Ca tối mở lúc 20:00", hoặc "Đã chấm ca sáng hôm nay. …").
+  - Test "Lỗi đã gặp: đang tối vẫn chọn được ca sáng" tìm chữ "Mở lúc" trên ô ca. Đổi sang kiểm tra: ô ca ngoài khung giờ bị khoá và ghi giờ mở (`Mở ${opensAt(k)}`), app chỉ tự chọn ca đang mở, không có ca đang mở thì không check-in được.
+- **Giờ trên nút chấm công.** Dòng dưới nút luôn bắt đầu bằng giờ hiện tại, cũng là giờ sẽ ghi vào lượt chấm ("07:52 · Ca sáng 08:00–17:00"), cập nhật mỗi khi đổi phút. Bỏ đồng hồ lớn (trước đây ở điện thoại bị cắt ở đáy màn hình).
+- **Một chỗ báo trạng thái khuôn mặt.** Trước đây cùng một ý hiện ba lần: trên camera, dưới tên và dưới nút. Giờ chỉ khung camera báo trạng thái khuôn mặt; nút luôn ghi giờ và ca, chỉ mờ đi khi chưa xác minh. Dòng dưới nút chỉ đổi khi camera không nói được lý do: chưa kích hoạt, tài khoản quản trị gốc, chưa đăng ký khuôn mặt.
+- **Tên lên thanh trên, chấm mạng ở góc ảnh.** Trước đây tên hiện hai lần: trên camera ("Đã xác minh Trần Thị Bình") và ở khối tên dưới camera. Giờ bỏ khối tên, và dòng trên camera chỉ ghi "Đã xác minh". Ảnh đại diện và tên nằm trên thanh trên (máy đăng nhập theo người, nên tên hiện cả lúc chưa xác minh); điện thoại của nhân viên bỏ chữ "Timesheet" cạnh biểu tượng để đủ chỗ. Chấm trạng thái mạng gộp thành huy hiệu ở góc ảnh đại diện: xanh khi trực tuyến, đỏ khi mất mạng. Di chuột vào tên thấy mã NV và trạng thái mạng. Tài khoản quản trị gốc (không có ảnh) vẫn có chấm mạng riêng.
+- **Vị trí chỉ hiện khi có vấn đề.** Dòng "Đã xác định vị trí, sai số khoảng 12 m" và "Đang lấy vị trí…" không còn hiện; chỉ hiện cảnh báo khi bị chặn quyền hoặc không lấy được GPS.
+- Nhân viên (không phải quản trị) không còn thanh điều hướng một mục "Chấm công" trên máy tính; điện thoại đã bỏ từ trước.
+- Đang trong ca thì bỏ dòng "Đang trong Ca sáng …, vào lúc …" vì nút đã ghi ca và giờ vào. Sau khi check-out vẫn có dòng chọn "Vào ca khác".
+- Service worker giữ `v16` (bản `v16` của nhánh chưa deploy), thêm `autopunch.js`, `toast.js`, `vitals.js` và `vendor/web-vitals.attribution.js` vào danh sách lưu offline.
+- `.claude/launch.json`: server chạy thử `timesheet-qa` dùng thư mục dữ liệu riêng (`.wrangler/state-qa`). Chạy cùng lúc với `npm run dev` thì hai server dùng chung `.wrangler/state` và dừng vì lỗi khoá SQLite mỗi lần tự tải lại.
+- `design/blueprint-cham-cong/`: hoạt hình blueprint Trước/Sau của màn Chấm công trên điện thoại 375×667 (giao diện sáng), 6 bước theo các thay đổi trên, dài 60 giây, chạy lặp. Không deploy (nằm ngoài `public/`).
+  - Giao diện thật là `stage-0.html` (Trước, commit `20fde5c`) đến `stage-6.html` (Sau, đang đếm tự check-in), dựng từ đúng HTML/CSS của app bằng `make-snapshot.mjs`. Các khung blueprint đo thẳng từ DOM của từng màn lúc mở trang. Sửa giao diện app thì chạy lại script.
+  - `animations-v3.jsx` là bộ chạy thay cho starter của Claude Design; có nút nhảy tới từng cảnh, nút "Trước" và "Sau" để xem nhanh hai màn.
+  - Mở: chạy cấu hình `blueprint` trong `.claude/launch.json` rồi vào `http://localhost:8790/`. `?t=12.5` mở ở giây 12.5.
+
+## 2026-10-26: Bổ sung CLAUDE.md
+
+Chưa deploy (chỉ đổi tài liệu).
+
+### Thay đổi
+- `CLAUDE.md`: thêm lệnh hay dùng (chạy một file test, lọc test theo tên, mô phỏng tải), kiến trúc Worker và các khoá KV, ràng buộc hạn mức gói miễn phí, quy tắc tăng `VERSION` service worker và giữ `SHIFTS` giống nhau ở hai nơi.
+
 ## 2026-10-26: Oval cỡ vừa phải, lời nhắc lại gần / lùi xa, khung giờ mở ca
 
 Chưa deploy.

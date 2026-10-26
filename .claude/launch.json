@@ -1,1 +1,47 @@
-{"version": "0.0.1", "configurations": [{"name": "timesheet", "runtimeExecutable": "npx", "runtimeArgs": ["wrangler", "dev", "--port", "8787"], "port": 8787}, {"name": "timesheet-qa", "runtimeExecutable": "npx", "runtimeArgs": ["wrangler", "dev", "--port", "8788", "--var", "ADMIN_KEY:root-admin-key", "--var", "TELEGRAM_API:http://127.0.0.1:9", "--var", "BOT_TOKEN:fake"], "port": 8788}]}
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "timesheet",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "wrangler",
+        "dev",
+        "--port",
+        "8787"
+      ],
+      "port": 8787
+    },
+    {
+      "name": "timesheet-qa",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "wrangler",
+        "dev",
+        "--port",
+        "8788",
+        "--var",
+        "ADMIN_KEY:root-admin-key",
+        "--var",
+        "TELEGRAM_API:http://127.0.0.1:9",
+        "--var",
+        "BOT_TOKEN:fake",
+        "--persist-to",
+        ".wrangler/state-qa"
+      ],
+      "port": 8788
+    },
+    {
+      "name": "blueprint",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8790",
+        "--directory",
+        "design/blueprint-cham-cong"
+      ],
+      "port": 8790
+    }
+  ]
+}
