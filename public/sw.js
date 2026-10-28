@@ -1,5 +1,5 @@
 // Service worker: chạy offline (giao diện + thư viện + mô hình nhận diện)
-const VERSION = 'v18';
+const VERSION = 'v19';
 const SHELL = ['./', 'index.html', 'app.js', 'face-logic.js', 'sort.js', 'shifts.js', 'import.js', 'retry.js', 'guide.js', 'latest.js', 'autopunch.js', 'toast.js', 'vitals.js', 'vendor/web-vitals.attribution.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png'];
 const CDN = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/';
 

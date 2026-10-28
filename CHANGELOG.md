@@ -2,6 +2,19 @@
 
 Mỗi lần thay đổi đều ghi vào đây, mới nhất ở trên. Ghi kèm phiên bản Cloudflare nếu đã deploy.
 
+## 2026-10-28: Mở trang là báo "Chưa nhập mã kích hoạt" dù đã kích hoạt
+
+Đã deploy: phiên bản `626c5d2d-56e9-47f9-9625-0aa92162b9e9` (2026-10-28), từ nhánh `feature/dang-nhap-theo-may`.
+
+### Sửa lỗi
+- **Quản trị viên mở trang là hiện thông báo "Chưa nhập mã kích hoạt"** (bản `38bd16c8`), dù vẫn dùng bình thường.
+  - Nguyên nhân: lúc khởi động, app dựng giao diện theo thông tin đăng nhập lưu trên máy và gọi danh sách nhân viên ngay (`applyRole` → `loadEmployees`), trước khi kho khoá trên máy (IndexedDB) mở xong. Không lấy được khoá nên request đi ra không có chữ ký, server trả `401 MISSING_ACCESS_CODE`. Các request sau ký bình thường nên app vẫn chạy.
+  - Cách sửa: lấy khoá của máy luôn chờ kho khoá mở xong; kho chỉ mở một lần, mọi lần gọi dùng chung. Có test "Lỗi đã gặp".
+  - Đã thử trên trình duyệt (bản chạy trên máy, quản trị UAT): tải lại trang thì `/api/employees` trả 200, không còn thông báo.
+
+### Thay đổi
+- Service worker lên `v19`.
+
 ## 2026-10-28: Môi trường UAT cùng địa chỉ, dữ liệu riêng
 
 Đã deploy: phiên bản `38bd16c8-24ff-4ab2-b390-dae6c8077ae0` (2026-10-28), từ nhánh `feature/dang-nhap-theo-may`.

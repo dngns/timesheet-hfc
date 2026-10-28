@@ -117,9 +117,10 @@ async function api(path, opts = {}, retried = false) {
 }
 
 // ---------------- Hàng đợi offline (IndexedDB) ----------------
-let qdb;
+let qdb, queueReady = null;
+// Mở một lần, các lần gọi sau dùng chung (request API phải chờ kho khoá mở xong mới ký được)
 function openQueue() {
-  return new Promise((res, rej) => {
+  return queueReady ||= new Promise((res, rej) => {
     const r = indexedDB.open('timesheet-queue', 2);
     r.onupgradeneeded = () => {
       const db = r.result;
@@ -147,7 +148,13 @@ const queueAll = () => qtx('readonly', s => s.getAll());
 // không dùng được. Một máy giữ được khoá của nhiều người (lượt chờ gửi của người đã đăng xuất vẫn gửi đúng tên).
 const ROOT_ACCOUNT = '#root';   // tài khoản quản trị gốc (ADMIN_KEY)
 let clockSkew = 0;              // giờ server − giờ máy (ms), chỉnh khi server báo SIGNATURE_EXPIRED
-const getDevice = code => qdb && code ? qtx('readonly', s => s.get(code), 'keys') : null;
+// Chờ kho khoá mở xong: lúc khởi động có request (vd danh sách nhân viên) chạy trước openQueue(), không chờ thì đi ra
+// không có chữ ký và bị báo "Chưa nhập mã kích hoạt"
+const getDevice = async code => {
+  if (!code) return null;
+  await openQueue().catch(() => {});
+  return qdb ? qtx('readonly', s => s.get(code), 'keys') : null;
+};
 const delDevice = code => qdb ? qtx('readwrite', s => s.delete(code), 'keys') : null;
 const b64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
 async function signHeaders(dev, method, path) {

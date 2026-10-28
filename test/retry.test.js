@@ -115,6 +115,13 @@ describe('app.js báo lỗi và chống bấm lặp', () => {
     assert.match(app.match(/function applyRole\(\) \{[\s\S]*?\n\}\n/)[0], /envChip[\s\S]*me\?\.space/);
   });
 
+  test('Lỗi đã gặp: mở trang là báo "Chưa nhập mã kích hoạt" dù đã kích hoạt (request gửi trước khi kho khoá mở xong)', () => {
+    // khởi động: applyRole() gọi loadEmployees() ngay, trước openQueue(); getDevice() trả null nên request đi không ký
+    const get = app.match(/const getDevice = [^\n]*\n(?:[^\n]*\n){0,4}/)[0];
+    assert.match(get, /await (openQueue|queueReady)/, 'lấy khoá phải chờ kho khoá mở xong');
+    assert.match(app.match(/function openQueue\(\) \{[\s\S]*?\n\}\n/)[0], /queueReady \|\|=/, 'mở kho khoá chỉ một lần, các lần gọi sau dùng chung');
+  });
+
   test('app đọc mã lỗi và mã tra cứu từ server', () => {
     const body = fn('api');
     assert.match(body, /requestId/);
