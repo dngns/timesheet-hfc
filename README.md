@@ -96,6 +96,7 @@ npx wrangler secret put WEBHOOK_SECRET
 ```
 
 - `ADMIN_KEY`: mã của **tài khoản quản trị gốc**, dùng lần đầu để tạo quản trị viên và nhân viên. Tài khoản này không chấm công. Giữ kín.
+- `ADMIN_KEY_UAT` (tuỳ chọn): mã quản trị gốc của **môi trường UAT**. Cùng địa chỉ, nhưng đăng nhập bằng mã này thì mọi dữ liệu (nhân viên, chấm công, máy đăng nhập) là của UAT, tách hẳn với dữ liệu đăng nhập bằng `ADMIN_KEY` (môi trường TEST). Đặt bằng `npx wrangler secret put ADMIN_KEY_UAT`.
 - `WEBHOOK_SECRET`: một chuỗi ngẫu nhiên bất kỳ (chỉ chữ, số, `_`, `-`).
 
 ### 5. Đưa lên mạng
@@ -175,6 +176,13 @@ Mở `http://localhost:8787`. Thêm `--test-scheduled` vào lệnh dev để th�
 - Quản trị viên: Sửa nhân viên → **Đăng xuất mọi máy** (vd mất điện thoại; mã kích hoạt giữ nguyên). **Tạo mã kích hoạt mới** cũng đăng xuất mọi máy.
 - Máy đang dùng bản cũ tự chuyển sang cách mới ở lần mở app đầu tiên (kể cả lượt chờ gửi đang lưu mã), rồi xoá mã khỏi máy.
 - `X-Access-Code` vẫn được nhận ở mọi API (dùng để kích hoạt và cho script quản trị). Vì mã kích hoạt kích hoạt được không giới hạn máy, giữ đường này không làm yếu đi: ai có mã thì đã dùng được rồi. Giữ kín mã kích hoạt như mật khẩu.
+
+## Môi trường TEST và UAT
+
+- Cùng một địa chỉ, dữ liệu tách theo mã đăng nhập: `ADMIN_KEY` là môi trường **TEST**, `ADMIN_KEY_UAT` là môi trường **UAT**. Nhân viên do quản trị UAT tạo chỉ nằm trong UAT; mã kích hoạt của họ đăng nhập vào UAT.
+- Trong KV, dữ liệu UAT có tiền tố `uat:` (`uat:employees`, `uat:log:…`, `uat:state:…`, `uat:day:…`); TEST giữ các key cũ không tiền tố. Mã máy đăng nhập: `d_…` là TEST, `u_…` là UAT.
+- Thanh trên cùng có nhãn **TEST** hoặc **UAT**. Ảnh chấm công và tin bot vào chung group Telegram, dòng đầu có `[TEST]` / `[UAT]`; cron và `/homnay` gửi riêng phần của từng môi trường (môi trường chưa có nhân viên thì không gửi, không tốn lệnh list KV).
+- Hai môi trường dùng chung hạn mức KV và giới hạn tần suất của cùng một Worker.
 
 ## Lỗi trả về từ API
 

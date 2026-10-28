@@ -7,6 +7,7 @@ const { SORTS, DEFAULT_SORT, sortRows } = ReportSort;   // sắp xếp Bảng c�
 const { SHIFTS, suggestShift, shiftLabel, shiftDateFor, isMissed, isShiftOpen, opensAt } = Shifts;     // ca làm việc (shifts.js)
 const { retryDelay, isRetryable, describeError } = Retry;                        // gửi lại lượt chờ (retry.js)
 const { ovalFor, fitHint, HINTS } = Guide;                                       // nhắc lại gần / lùi xa (guide.js)
+const { latestOnly } = Latest;                                                   // bộ lọc: chỉ lấy lần bấm cuối (latest.js)
 const { DELAY_MS: AUTO_MS, canAuto, secondsLeft } = AutoPunch;                   // tự check-in sau khi xác minh (autopunch.js)
 const shiftOf = l => SHIFTS[l?.shift] ? l.shift : 'sang'; // lượt cũ (trước khi có ca) tính là ca sáng
 const dmyhm = ts => { const d = new Date(ts); return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
@@ -253,6 +254,10 @@ function applyRole() {
   document.body.classList.toggle('solo', !isAdmin());   // nhân viên chỉ có màn chấm công: điện thoại ẩn thanh điều hướng
   document.querySelectorAll('[data-admin]').forEach(el => el.hidden = !isAdmin());
   $('btnLogout').hidden = !me;
+  // môi trường dữ liệu của người đăng nhập (cùng địa chỉ, dữ liệu TEST và UAT tách riêng)
+  $('envChip').hidden = !me?.space;
+  $('envChip').textContent = me?.space === 'uat' ? 'UAT' : 'TEST';
+  $('envChip').classList.toggle('uat', me?.space === 'uat');
   if (isAdmin() && pendingView) { const v = pendingView; pendingView = null; showView(v); }
   if (!isAdmin() && view !== 'kiosk') showView('kiosk');
   // đổi người đăng nhập thì phải xác minh khuôn mặt lại từ đầu
@@ -669,7 +674,7 @@ let todayLogs = [];
 let pending = [];
 // Bảng công hôm nay vừa tải trong 60 giây thì chuyển tab qua lại không tải lại (mỗi lần tốn 1–2 lệnh list KV)
 const TODAY_FRESH_MS = 60 * 1000;
-let todayAt = 0;
+let todayAt = 0, todayCtl = null;
 async function loadToday(opts) {
   const force = opts?.force === true;   // sau khi chấm công / gửi được lượt chờ / bấm Thử lại
   // quản trị: bảng công hôm nay và hôm qua (ca tối đang làm qua nửa đêm); nhân viên: chỉ cần ca đang mở
@@ -679,8 +684,9 @@ async function loadToday(opts) {
   if (isAdmin() && todayOpen()) {
     if (force || Date.now() - todayAt > TODAY_FRESH_MS) {
       const now = new Date(), from = now.getHours() < 12 ? ymd(addDays(now, -1)) : ymd(now);
-      try { todayLogs = await api(`/api/logs?from=${from}&to=${ymd(now)}`); todayAt = Date.now(); }
-      catch (e) { errs.push('bảng công hôm nay: ' + describeError(statusOf(e), e.message)); }
+      todayCtl?.abort(); todayCtl = new AbortController();   // rời Bảng công thì huỷ (showView)
+      try { todayLogs = await api(`/api/logs?from=${from}&to=${ymd(now)}`, { signal: todayCtl.signal }); todayAt = Date.now(); }
+      catch (e) { if (e.name !== 'AbortError') errs.push('bảng công hôm nay: ' + describeError(statusOf(e), e.message)); }
     }
   }
   if (me && !me.root) {
@@ -954,7 +960,20 @@ $('presets').onclick = e => { const b = e.target.closest('button'); if (b) setPr
 $('fFrom').onchange = $('fTo').onchange = () => { markPreset(null); loadHistory(); };
 $('fEmp').onchange = renderHistory;
 
+// Bấm chip lọc / đổi ngày liên tục: giao diện đổi ngay, nhưng chỉ gọi API cho lựa chọn cuối (sau 300 ms không bấm thêm).
+// Lựa chọn mới hoặc rời Bảng công thì huỷ request cũ đang chạy, kết quả cũ không đè lên lựa chọn mới.
+const historyLoader = latestOnly(async (signal, from, to, key) => {
+  try {
+    const logs = await api(`/api/logs?from=${from}&to=${to}`, { signal });
+    historyCache.set(key, { at: Date.now(), logs });
+    historyLogs = logs; historyKey = key;
+    renderHistory();
+  } catch (e) {
+    if (e.name !== 'AbortError') $('histSummary').textContent = 'Không tải được bảng công: ' + e.message;
+  }
+}, 300);
 async function loadHistory(force) {
+  historyLoader.cancel();   // lựa chọn trước còn chờ hoặc đang tải: bỏ, chỉ theo lựa chọn này
   const from = $('fFrom').value, to = $('fTo').value;
   if (!from || !to) return;
   if (from > to) { $('histSummary').textContent = 'Ngày bắt đầu đang sau ngày kết thúc. Chọn lại khoảng ngày.'; return; }
@@ -963,12 +982,7 @@ async function loadHistory(force) {
   const hit = historyCache.get(key);
   if (hit && !force && Date.now() - hit.at < TODAY_FRESH_MS) { historyLogs = hit.logs; historyKey = key; return renderHistory(); }
   $('histSummary').textContent = 'Đang tải bảng công…';
-  try {
-    historyLogs = await api(`/api/logs?from=${from}&to=${to}`);
-    historyCache.set(key, { at: Date.now(), logs: historyLogs });
-    historyKey = key;
-    renderHistory();
-  } catch (e) { $('histSummary').textContent = 'Không tải được bảng công: ' + e.message; }
+  historyLoader.run(from, to, key);
 }
 const historyFiltered = () => historyLogs.filter(l => !$('fEmp').value || l.code === $('fEmp').value);
 
@@ -1487,6 +1501,8 @@ function showView(v) {
   view = v;
   document.querySelectorAll('.nav button').forEach(b => b.dataset.view === v ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current'));
   for (const id of ['kiosk', 'report', 'admin']) $('view-' + id).hidden = id !== v;
+  // rời Bảng công: huỷ request bảng công đang chờ / đang chạy (không tải thừa)
+  if (v !== 'report') { historyLoader.cancel(); todayCtl?.abort(); }
   if (v === 'report' && !$('r-history').hidden) loadHistory();
   if (v === 'report' && !$('r-today').hidden) loadToday();   // Bảng công hôm nay chỉ tải khi mở
   if (location.hash.slice(1) !== v) history.replaceState(null, '', '#' + v);
@@ -1499,8 +1515,8 @@ document.querySelector('.toggle').onclick = e => {
   document.querySelectorAll('.toggle button').forEach(x => x.setAttribute('aria-pressed', x === b));
   $('r-today').hidden = b.dataset.rtab !== 'today';
   $('r-history').hidden = b.dataset.rtab !== 'history';
-  if (b.dataset.rtab === 'history') loadHistory();
-  else loadToday();
+  if (b.dataset.rtab === 'history') { todayCtl?.abort(); loadHistory(); }
+  else { historyLoader.cancel(); loadToday(); }
 };
 
 // ---------------- PWA ----------------

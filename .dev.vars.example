@@ -1,5 +1,7 @@
 # Chép thành .dev.vars để chạy thử trên máy (npm run dev)
 BOT_TOKEN=123456:ABC-token-tu-BotFather
 ADMIN_KEY=doi-ma-quan-tri
+# tuỳ chọn: mã quản trị gốc của môi trường UAT (cùng địa chỉ, dữ liệu riêng)
+ADMIN_KEY_UAT=doi-ma-quan-tri-uat
 WEBHOOK_SECRET=chuoi-ngau-nhien
 TELEGRAM_CHAT_ID=-1001234567890

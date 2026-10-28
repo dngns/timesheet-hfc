@@ -109,6 +109,12 @@ describe('app.js báo lỗi và chống bấm lặp', () => {
     assert.match(html, /id="onboardBorrowed"/, 'có lựa chọn máy mượn');
   });
 
+  test('thanh trên cùng ghi rõ đang ở môi trường TEST hay UAT', () => {
+    const html = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8');
+    assert.match(html, /id="envChip"/);
+    assert.match(app.match(/function applyRole\(\) \{[\s\S]*?\n\}\n/)[0], /envChip[\s\S]*me\?\.space/);
+  });
+
   test('app đọc mã lỗi và mã tra cứu từ server', () => {
     const body = fn('api');
     assert.match(body, /requestId/);

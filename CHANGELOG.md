@@ -2,9 +2,41 @@
 
 Mỗi lần thay đổi đều ghi vào đây, mới nhất ở trên. Ghi kèm phiên bản Cloudflare nếu đã deploy.
 
+## 2026-10-28: Môi trường UAT cùng địa chỉ, dữ liệu riêng
+
+Đã deploy: phiên bản `38bd16c8-24ff-4ab2-b390-dae6c8077ae0` (2026-10-28), từ nhánh `feature/dang-nhap-theo-may`.
+
+### Thêm
+- **Môi trường UAT**: cùng địa chỉ, nhưng đăng nhập bằng `ADMIN_KEY_UAT` (secret mới) thì nhân viên, chấm công, trạng thái ca, máy đăng nhập là dữ liệu riêng của UAT. `ADMIN_KEY` hiện tại thành môi trường TEST, dữ liệu cũ giữ nguyên.
+  - KV của UAT có tiền tố `uat:`; TEST giữ key cũ không tiền tố (không phải chuyển dữ liệu). Bản lưu tạm (Cache API) cũng tách theo môi trường.
+  - Mã kích hoạt của nhân viên được dò lần lượt trong TEST rồi UAT; mã máy mang tiền tố môi trường (`d_` TEST, `u_` UAT) nên request đã ký chỉ đọc 1 bản ghi nhân viên như trước.
+  - `/api/me` trả thêm `space` (`test` / `uat`); thanh trên cùng có nhãn **TEST** / **UAT**.
+  - Dùng chung group Telegram: ảnh chấm công, tin nhắc ca và tổng hợp có dòng đầu `[TEST]` / `[UAT]`. Cron và `/homnay` gửi riêng phần từng môi trường; môi trường chưa có nhân viên thì bỏ qua, không tốn lệnh list KV.
+  - Chưa đặt `ADMIN_KEY_UAT` thì UAT không đăng nhập được, mọi thứ chạy như cũ (thêm nhãn `[TEST]`).
+  - Đã thử trên trình duyệt (bản chạy trên máy): đăng nhập quản trị UAT thấy nhãn UAT và chỉ thấy nhân viên UAT; TEST không thấy nhân viên UAT.
+
+### Thay đổi
+- Ảnh và tin bot của môi trường hiện tại có thêm `[TEST]` ở dòng đầu.
+- Service worker lên `v18`. README có mục "Môi trường TEST và UAT"; `.dev.vars.example` thêm `ADMIN_KEY_UAT`; `.claude/launch.json` (cấu hình `timesheet-qa`) thêm `ADMIN_KEY_UAT=root-uat-key` để thử trên máy.
+
+## 2026-10-28: Bộ lọc Bảng công chỉ lấy lần bấm cuối, huỷ request khi rời trang
+
+Đã deploy: phiên bản `38bd16c8-24ff-4ab2-b390-dae6c8077ae0` (2026-10-28), từ nhánh `feature/dang-nhap-theo-may`.
+
+### Sửa lỗi
+- **Bấm liên tục các chip lọc (Hôm nay → 7 ngày qua → Tháng này → Tháng trước…) thì mỗi lần bấm gọi `/api/logs` một lần**, mỗi lần tốn lệnh list KV; kết quả về không theo thứ tự có thể đè lên lựa chọn mới.
+  - Cách sửa: chip và ô ngày vẫn đổi ngay khi bấm, nhưng chỉ gọi API cho lựa chọn cuối (sau 300 ms không bấm thêm). Lựa chọn mới huỷ request cũ đang chạy (AbortController). Khoảng đã tải trong 60 giây thì hiện ngay, không chờ.
+  - Rời Bảng công (sang Chấm công / Quản trị) hoặc đổi qua tab "Hôm nay" / "Theo khoảng ngày" thì huỷ request bảng công đang chờ hoặc đang chạy. Request bị huỷ không báo lỗi.
+  - Logic nằm trong `public/latest.js` (`latestOnly`), có test (`test/latest.test.js`).
+  - Đo trên trình duyệt (bản chạy trên máy): bấm 9 chip liên tục cách nhau 80 ms → 1 lần gọi, đúng chip cuối; rời trang khi đang tải → request bị huỷ; rời trang khi còn chờ → không gọi.
+  - Lưu ý: huỷ phía app không thu hồi được request đã tới server (server vẫn có thể đã list KV). Phần tiết kiệm lệnh list chủ yếu đến từ việc chỉ gọi lần bấm cuối.
+
+### Thay đổi
+- Service worker lên `v17`; thêm `latest.js` vào `SHELL` và `index.html`.
+
 ## 2026-10-27: Màn Chấm công: camera tràn màn, tự check-in, bớt phần thừa, blueprint Trước/Sau
 
-Chưa deploy. Làm trên nhánh `feature/dang-nhap-theo-may`, sau commit `20fde5c`.
+Đã deploy: phiên bản `38bd16c8-24ff-4ab2-b390-dae6c8077ae0` (2026-10-28), từ nhánh `feature/dang-nhap-theo-may`.
 
 ### Sửa lỗi
 - **Kéo thông báo thì nó đi theo tay tới tận thanh trên.** Bản đầu cho thẻ đi theo tay mọi hướng, không giới hạn. Giờ hướng không dùng để tắt bị cản như Sonner (xem mục Thông báo bên dưới). Có test "Lỗi đã gặp".
@@ -108,7 +140,7 @@ Chưa deploy (chỉ đổi tài liệu).
 
 ## 2026-10-26: Oval cỡ vừa phải, lời nhắc lại gần / lùi xa, khung giờ mở ca
 
-Chưa deploy.
+Đã deploy: nằm trong phiên bản `38bd16c8-24ff-4ab2-b390-dae6c8077ae0` (2026-10-28).
 
 ### Sửa lỗi
 - **Oval to hơn hẳn khuôn mặt trên máy tính** (bản `258135c6`).

@@ -52,9 +52,38 @@ export default {
       : ['remind', 'toi', today];
     const [kind, shift, date] = job;
     if (isHoliday(env, date)) return;   // ngày lễ: không nhắc, không tổng hợp
-    ctx.waitUntil(kind === 'remind' ? shiftReminder(env, date, shift) : shiftSummary(env, date, shift));
+    // mỗi môi trường (TEST, UAT) một tin riêng; môi trường chưa có nhân viên thì không gửi
+    for (const sp of SPACES) {
+      const senv = spaceEnv(env, sp);
+      ctx.waitUntil(kind === 'remind' ? shiftReminder(senv, date, shift) : shiftSummary(senv, date, shift));
+    }
   },
 };
+
+// ---------------- Môi trường dữ liệu (TEST / UAT) ----------------
+// Cùng một địa chỉ, dữ liệu tách theo mã đăng nhập. TEST dùng các key KV cũ (không tiền tố) và ADMIN_KEY;
+// UAT dùng key có tiền tố `uat:` (uat:employees, uat:log:…) và ADMIN_KEY_UAT. Mã máy (đăng nhập theo máy) mang
+// tiền tố môi trường: d_ là TEST, u_ là UAT. Ảnh và tin bot vào chung group Telegram, có nhãn [TEST] / [UAT].
+const SPACES = [
+  { id: 'test', label: 'TEST', prefix: '', adminKey: 'ADMIN_KEY', device: 'd_' },
+  { id: 'uat', label: 'UAT', prefix: 'uat:', adminKey: 'ADMIN_KEY_UAT', device: 'u_' },
+];
+// KV nhìn qua tiền tố của môi trường: code bên dưới dùng tên key như cũ ('employees', 'log:…')
+function scopedKV(kv, prefix) {
+  if (!prefix) return kv;
+  return {
+    get: (k, type) => kv.get(prefix + k, type),
+    getWithMetadata: (k, type) => kv.getWithMetadata(prefix + k, type),
+    put: (k, v, opts) => kv.put(prefix + k, v, opts),
+    delete: k => kv.delete(prefix + k),
+    async list(opts = {}) {
+      const r = await kv.list({ ...opts, prefix: prefix + (opts.prefix || '') });
+      return { ...r, keys: r.keys.map(k => ({ ...k, name: k.name.slice(prefix.length) })) };
+    },
+  };
+}
+const spaceEnv = (env, sp) => ({ ...env, KV: scopedKV(env.KV, sp.prefix), SPACE: sp, ADMIN_KEY: env[sp.adminKey] });
+const spaceTag = env => env.SPACE ? `[${env.SPACE.label}] ` : '';
 
 // ---------------- Phân quyền ----------------
 // Mỗi người có mã kích hoạt riêng (admin sinh ra). Server chỉ lưu hash của mã.
@@ -130,18 +159,29 @@ async function saveDevices(env, user, fn) {
   await env.KV.put('employees', JSON.stringify(list));
 }
 
+// Xác thực và chọn môi trường: máy theo tiền tố mã máy; mã kích hoạt thì dò lần lượt TEST rồi UAT.
+// Trả về người dùng và env đã gắn môi trường (KV có tiền tố, ADMIN_KEY của môi trường đó).
 async function authenticate(req, env) {
   const deviceId = req.headers.get('X-Device');
-  if (deviceId) return verifyDevice(req, env, deviceId);
+  if (deviceId) {
+    const senv = spaceEnv(env, SPACES.find(sp => deviceId.startsWith(sp.device)) || SPACES[0]);
+    return { user: await verifyDevice(req, senv, deviceId), env: senv };
+  }
   const raw = (req.headers.get('X-Access-Code') || '').trim();
   if (!raw) throw httpError(401, 'Chưa nhập mã kích hoạt', 'MISSING_ACCESS_CODE');
-  if (env.ADMIN_KEY && raw === env.ADMIN_KEY) return { root: true, role: ROLE_ADMIN, name: 'Quản trị hệ thống' };
+  for (const sp of SPACES) {
+    const senv = spaceEnv(env, sp);
+    if (senv.ADMIN_KEY && raw === senv.ADMIN_KEY) return { user: { root: true, role: ROLE_ADMIN, name: 'Quản trị hệ thống' }, env: senv };
+  }
   const hash = await sha256(normCode(raw));
-  const emp = (await getEmployees(env)).find(e => e.keyHash === hash);
+  for (const sp of SPACES) {
+    const senv = spaceEnv(env, sp);
+    const emp = (await getEmployees(senv)).find(e => e.keyHash === hash);
+    if (emp) return { user: { ...emp, role: emp.role === ROLE_ADMIN ? ROLE_ADMIN : ROLE_EMPLOYEE }, env: senv };
+  }
   // chỉ đếm lần nhập sai: người nhập sai nhiều bị chặn, người dùng mã đúng cùng mạng (máy chung ở văn phòng) vẫn vào được
-  if (!emp) await rateLimit(env, 'RL_AUTH', clientIp(req), 'Nhập sai mã kích hoạt quá nhiều lần. Chờ 1 phút rồi thử lại.');
-  if (!emp) throw httpError(401, 'Mã kích hoạt không đúng hoặc đã được đổi. Liên hệ quản trị viên để lấy mã mới.', 'INVALID_ACCESS_CODE');
-  return { ...emp, role: emp.role === ROLE_ADMIN ? ROLE_ADMIN : ROLE_EMPLOYEE };
+  await rateLimit(env, 'RL_AUTH', clientIp(req), 'Nhập sai mã kích hoạt quá nhiều lần. Chờ 1 phút rồi thử lại.');
+  throw httpError(401, 'Mã kích hoạt không đúng hoặc đã được đổi. Liên hệ quản trị viên để lấy mã mới.', 'INVALID_ACCESS_CODE');
 }
 
 const publicEmp = e => ({
@@ -197,7 +237,9 @@ async function api(req, env, url) {
   // Số đo Core Web Vitals từ máy người dùng (public/vitals.js), gửi lúc rời trang nên không ký được: không cần đăng nhập.
   // Chỉ ghi log (Observability), không ghi KV, nên không tốn hạn mức ghi 1.000 lần/ngày.
   if (p === '/api/vitals' && m === 'POST') return vitals(req);
-  const user = await authenticate(req, env);
+  const auth = await authenticate(req, env);
+  const user = auth.user;
+  env = auth.env;   // từ đây mọi đọc/ghi KV thuộc môi trường của người đăng nhập
   const isAdmin = user.role === ROLE_ADMIN;
   const needAdmin = () => { if (!isAdmin) throw httpError(403, 'Chỉ quản trị viên được dùng chức năng này', 'ADMIN_ONLY'); };
 
@@ -207,10 +249,10 @@ async function api(req, env, url) {
     const { pub, borrowed = false } = await req.json();
     try { if (typeof pub !== 'string' || b64d(pub).length !== 65) throw 0; await importDeviceKey(pub); }
     catch { throw httpError(400, 'Khoá của máy không hợp lệ. Tải lại trang rồi kích hoạt lại.', 'INVALID_DEVICE_KEY'); }
-    const dev = { id: 'd_' + [...crypto.getRandomValues(new Uint8Array(10))].map(b => b.toString(16).padStart(2, '0')).join(''), pub, at: Date.now() };
+    const dev = { id: env.SPACE.device + [...crypto.getRandomValues(new Uint8Array(10))].map(b => b.toString(16).padStart(2, '0')).join(''), pub, at: Date.now() };
     if (borrowed) dev.borrowed = true;
     await saveDevices(env, user, devs => [...devs, dev]);
-    return json({ ok: true, deviceId: dev.id, me: user.root ? { root: true, role: ROLE_ADMIN, name: user.name } : publicEmp(user) });
+    return json({ ok: true, deviceId: dev.id, me: { ...(user.root ? { root: true, role: ROLE_ADMIN, name: user.name } : publicEmp(user)), space: env.SPACE.id } });
   }
   // Đăng xuất: không có ?code thì thu hồi máy đang dùng; quản trị viên gửi ?code=NV01 để đăng xuất mọi máy của người đó
   if (p === '/api/devices' && m === 'DELETE') {
@@ -230,7 +272,7 @@ async function api(req, env, url) {
   }
 
   if (p === '/api/me' && m === 'GET') {
-    return json(user.root ? { root: true, role: ROLE_ADMIN, name: user.name } : publicEmp(user));
+    return json({ ...(user.root ? { root: true, role: ROLE_ADMIN, name: user.name } : publicEmp(user)), space: env.SPACE.id });
   }
 
   if (p === '/api/employees' && m === 'GET') {
@@ -502,7 +544,7 @@ async function punch(req, env, emp) {
   const loc = readLocation(form, req.cf);
   const s = SHIFTS[shift];
   const caption = [
-    `${type === 'in' ? '🟢 <b>CHECK-IN</b>' : `🔴 <b>CHECK-OUT</b> (lần ${outNo}/${OUTS_MAX})`} · ${s.name} ${s.start}–${s.end}${date !== day ? ` (ngày ${dmy(date)})` : ''}`,
+    `${spaceTag(env)}${type === 'in' ? '🟢 <b>CHECK-IN</b>' : `🔴 <b>CHECK-OUT</b> (lần ${outNo}/${OUTS_MAX})`} · ${s.name} ${s.start}–${s.end}${date !== day ? ` (ngày ${dmy(date)})` : ''}`,
     `🕒 Thời gian: ${dmy(day)} ${time.slice(0, 5)}`,
     `🪪 Mã NV: ${esc(code)}`,
     `👤 Họ tên: ${esc(emp.name)}${emp.tg ? ' @' + esc(emp.tg) : ''}`,
@@ -538,7 +580,7 @@ async function punch(req, env, emp) {
     msg: msg.message_id, photo: msg.photo[msg.photo.length - 1].file_id,
   };
   await env.KV.put(logKey(date, ts, code), '', { metadata: meta, expirationTtl: LOG_TTL });
-  await forgetDay(date);
+  await forgetDay(env, date);
   // máy mượn: chấm công xong thì đăng xuất máy đó
   if (emp.device?.borrowed) {
     await saveDevices(env, emp, devs => devs.filter(d => d.id !== emp.device.id));
@@ -559,7 +601,15 @@ async function telegramWebhook(req, env) {
 
   if (cmd === '/chatid') await reply(`Chat id: <code>${chatId}</code>`);
   else if (chatId !== String(env.TELEGRAM_CHAT_ID)) { /* bỏ qua chat lạ */ }
-  else if (cmd === '/homnay') await reply(await buildSummary(env, ymd(localNow(env))));
+  else if (cmd === '/homnay') {
+    // chung một group: gửi phần của từng môi trường có nhân viên
+    const parts = [];
+    for (const sp of SPACES) {
+      const senv = spaceEnv(env, sp);
+      if ((await getEmployees(senv)).length) parts.push(await buildSummary(senv, ymd(localNow(env))));
+    }
+    await reply(parts.join('\n\n') || 'Chưa có nhân viên nào.');
+  }
   else if (cmd === '/help' || cmd === '/start') await reply(
     '🤖 Bot chấm công\n/homnay — ai đã vào/ra hôm nay (cả hai ca)\n/chatid — id của group\n\n' +
     `Tự động: 09:00 nhắc ca sáng, 18:30 tổng hợp ca sáng, 23:00 nhắc ca tối, 07:00 tổng hợp ca tối hôm trước.`);
@@ -568,7 +618,9 @@ async function telegramWebhook(req, env) {
 
 // Ai cần có mặt ở một ca: người có ca thường làm là ca đó, cộng người đã check-in ca đó
 async function shiftStatus(env, date, shift) {
-  const [emps, logs] = await Promise.all([getEmployees(env), logsOfDay(env, date)]);
+  const emps = await getEmployees(env);
+  if (!emps.length) return [];   // môi trường chưa có ai (vd UAT mới): không tốn lệnh list KV
+  const logs = await logsOfDay(env, date);
   const rows = [];
   for (const emp of emps) {
     const mine = logs.filter(l => l.code === emp.code && shiftOf(l) === shift);
@@ -585,22 +637,22 @@ async function shiftReminder(env, date, shift) {
   const st = await shiftStatus(env, date, shift), s = SHIFTS[shift];
   if (!st.length) return;
   const missing = st.filter(r => !r.first);
-  const text = missing.length
+  const text = spaceTag(env) + (missing.length
     ? `⏰ <b>Nhắc check-in ${s.name} ${dmy(date)}</b> (${s.start}–${s.end})\nChưa check-in (${missing.length}/${st.length}):\n` + missing.map(r => '• ' + who(r.emp)).join('\n')
-    : `✅ ${s.name} ${dmy(date)}: tất cả ${st.length} người đã check-in.`;
+    : `✅ ${s.name} ${dmy(date)}: tất cả ${st.length} người đã check-in.`);
   await tg(env, 'sendMessage', { chat_id: env.TELEGRAM_CHAT_ID, text, parse_mode: 'HTML' });
 }
 
 async function shiftSummary(env, date, shift) {
   const st = await shiftStatus(env, date, shift);
   if (!st.length) return;
-  const text = `📊 <b>Chấm công ${dmy(date)}</b>\n` + shiftSection(st, shift, true) + '\n\nNếu quên, vui lòng báo quản lý để điều chỉnh.';
+  const text = `${spaceTag(env)}📊 <b>Chấm công ${dmy(date)}</b>\n` + shiftSection(st, shift, true) + '\n\nNếu quên, vui lòng báo quản lý để điều chỉnh.';
   await tg(env, 'sendMessage', { chat_id: env.TELEGRAM_CHAT_ID, text, parse_mode: 'HTML' });
 }
 
 // /homnay và "Gửi tổng hợp ngay": cả hai ca của ngày, không gọi người đang làm là "quên check-out"
 async function buildSummary(env, date) {
-  const parts = [`📊 <b>Chấm công ${dmy(date)}</b>`];
+  const parts = [`${spaceTag(env)}📊 <b>Chấm công ${dmy(date)}</b>`];
   for (const shift of Object.keys(SHIFTS)) {
     const st = await shiftStatus(env, date, shift);
     if (st.length) parts.push(shiftSection(st, shift, false));
@@ -636,9 +688,9 @@ async function getEmployees(env) {
 // Đọc bảng công qua Cache API của Workers (miễn phí, không tính vào giới hạn 1.000 lệnh liệt kê KV/ngày).
 // Ngày hôm nay giữ 60 giây và bị xoá ngay khi có lượt chấm mới; ngày đã qua giữ 1 giờ.
 // fresh: bỏ qua cache (dùng khi kiểm tra thứ tự vào/ra lúc chấm công).
-const dayCacheKey = date => new Request(`https://cache.timesheet.internal/logs/${date}`);
-async function forgetDay(date) {
-  await globalThis.caches?.default?.delete(dayCacheKey(date));
+const dayCacheKey = (env, date) => new Request(`https://cache.timesheet.internal/logs/${env.SPACE?.prefix || ''}${date}`);
+async function forgetDay(env, date) {
+  await globalThis.caches?.default?.delete(dayCacheKey(env, date));
 }
 // Ngày công đã khoá: qua 12:00 trưa hôm sau (hết ca tối) thêm 24 giờ cho lượt gửi trễ thì không nhận thêm lượt nào.
 // Ngày đã khoá lưu thành một key `day:<ngày>` (đọc bằng get, hạn mức 100k/ngày) để không phải list lại.
@@ -677,13 +729,13 @@ async function logsOfRange(env, days) {
 async function logsOfDay(env, date, { fresh = false } = {}) {
   const cache = globalThis.caches?.default;
   if (cache && !fresh) {
-    const hit = await cache.match(dayCacheKey(date));
+    const hit = await cache.match(dayCacheKey(env, date));
     if (hit) return hit.json();
   }
   const out = await listLogs(env, `log:${date}:`);
   if (cache) {
     const maxAge = date < ymd(localNow(env)) ? 3600 : 60;
-    await cache.put(dayCacheKey(date), new Response(JSON.stringify(out), { headers: { 'Content-Type': 'application/json', 'Cache-Control': `max-age=${maxAge}` } }));
+    await cache.put(dayCacheKey(env, date), new Response(JSON.stringify(out), { headers: { 'Content-Type': 'application/json', 'Cache-Control': `max-age=${maxAge}` } }));
   }
   return out;
 }

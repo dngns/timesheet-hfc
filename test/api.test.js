@@ -920,6 +920,70 @@ describe('Đăng nhập theo máy (mã kích hoạt không lưu trên máy)', ()
   });
 });
 
+describe('Không gian dữ liệu TEST / UAT (cùng địa chỉ, khác dữ liệu)', () => {
+  const UAT = 'root-uat-key';
+  const addUat = async (code, name, extra = {}) => {
+    const r = await call('PUT', '/api/employees', { code: UAT, json: { code, name, descriptors: [desc()], ...extra } });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    return r.data.accessCode;
+  };
+  beforeEach(() => { env.ADMIN_KEY_UAT = UAT; });
+
+  test('Lỗi đã gặp: key admin mới cho UAT nhưng dùng chung dữ liệu với môi trường test', async () => {
+    await addEmp('NV01', 'Người test');
+    await addUat('KH01', 'Khách UAT');
+    assert.deepEqual((await call('GET', '/api/employees', { code: ROOT })).data.map(e => e.code), ['NV01']);
+    assert.deepEqual((await call('GET', '/api/employees', { code: UAT })).data.map(e => e.code), ['KH01']);
+    assert.ok(env.KV.m.has('uat:employees'), 'dữ liệu UAT nằm dưới tiền tố uat:');
+  });
+
+  test('chấm công UAT chỉ hiện ở Bảng công UAT; ảnh Telegram ghi rõ môi trường', async () => {
+    setNow('2026-10-28T08:00:00');
+    const t = await addEmp('NV01', 'Người test'), u = await addUat('KH01', 'Khách UAT');
+    await punch(t, 'in'); await punch(u, 'in');
+    assert.deepEqual((await call('GET', '/api/logs', { code: ROOT })).data.map(l => l.code), ['NV01']);
+    assert.deepEqual((await call('GET', '/api/logs', { code: UAT })).data.map(l => l.code), ['KH01']);
+    assert.match(sent('sendPhoto')[0].body.caption, /^\[TEST\]/);
+    assert.match(sent('sendPhoto')[1].body.caption, /^\[UAT\]/);
+    assert.equal((await call('GET', '/api/status', { code: u })).data.open.shift, 'sang');
+    assert.equal((await call('GET', '/api/status', { code: t })).data.open.shift, 'sang');
+  });
+
+  test('/api/me cho biết đang ở môi trường nào', async () => {
+    const u = await addUat('KH01', 'Khách UAT');
+    assert.equal((await call('GET', '/api/me', { code: u })).data.space, 'uat');
+    assert.equal((await call('GET', '/api/me', { code: UAT })).data.space, 'uat');
+    assert.equal((await call('GET', '/api/me', { code: ROOT })).data.space, 'test');
+  });
+
+  test('đăng nhập theo máy ở UAT: mã máy u_, ký request thấy dữ liệu UAT', async () => {
+    await addEmp('NV01', 'Người test');
+    const u = await addUat('KH01', 'Khách UAT');
+    const dev = await activate(u);
+    assert.match(dev.id, /^u_/);
+    assert.equal((await signed(dev, 'GET', '/api/me')).data.code, 'KH01');
+    const root = await activate(UAT);
+    assert.deepEqual((await signed(root, 'GET', '/api/employees')).data.map(e => e.code), ['KH01']);
+  });
+
+  test('cron tổng hợp riêng từng môi trường, có nhãn', async () => {
+    setNow('2026-10-28T08:00:00');
+    const t = await addEmp('NV01', 'Người test'), u = await addUat('KH01', 'Khách UAT');
+    await punch(t, 'in'); await punch(u, 'in');
+    setNow('2026-10-28T18:30:00');
+    const jobs = []; await worker.scheduled({}, env, { waitUntil: p => jobs.push(p) }); await Promise.all(jobs);
+    const texts = sent('sendMessage').map(m => m.body.text);
+    assert.equal(texts.length, 2);
+    assert.ok(texts.some(x => /^\[TEST\]/.test(x) && x.includes('Người test') && !x.includes('Khách UAT')));
+    assert.ok(texts.some(x => /^\[UAT\]/.test(x) && x.includes('Khách UAT') && !x.includes('Người test')));
+  });
+
+  test('chưa đặt ADMIN_KEY_UAT thì không đăng nhập được UAT', async () => {
+    delete env.ADMIN_KEY_UAT;
+    assert.equal((await call('GET', '/api/me', { code: UAT })).status, 401);
+  });
+});
+
 describe('Định dạng lỗi trả về', () => {
   const shape = (r, status, code) => {
     assert.equal(r.status, status);
