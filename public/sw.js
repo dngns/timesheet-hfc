@@ -1,6 +1,6 @@
 // Service worker: chạy offline (giao diện + thư viện + mô hình nhận diện)
-const VERSION = 'v15';
-const SHELL = ['./', 'index.html', 'app.js', 'face-logic.js', 'sort.js', 'shifts.js', 'import.js', 'retry.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png'];
+const VERSION = 'v19';
+const SHELL = ['./', 'index.html', 'app.js', 'face-logic.js', 'sort.js', 'shifts.js', 'import.js', 'retry.js', 'guide.js', 'latest.js', 'autopunch.js', 'toast.js', 'vitals.js', 'vendor/web-vitals.attribution.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png'];
 const CDN = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/';
 
 // Thư viện + mô hình nhận diện: lưu sẵn ngay khi cài, để lần mở đầu tiên đã chạy được khi mất mạng
@@ -35,7 +35,7 @@ self.addEventListener('fetch', e => {
       const hit = await c.match(req);
       if (hit) return hit;
       const res = await fetch(req);
-      if (res.ok) c.put(req, res.clone());
+      if (res.ok) void c.put(req, res.clone());
       return res;
     }));
     return;
@@ -44,7 +44,7 @@ self.addEventListener('fetch', e => {
   // Giao diện: lấy bản mới khi có mạng, mất mạng thì dùng bản đã lưu
   if (url.origin === location.origin) {
     e.respondWith(fetch(req).then(res => {
-      if (res.ok) caches.open('shell-' + VERSION).then(c => c.put(req, res.clone()));
+      if (res.ok) void caches.open('shell-' + VERSION).then(c => c.put(req, res.clone()));
       return res;
     }).catch(() => caches.match(req, { ignoreSearch: true }).then(r => r || caches.match('index.html'))));
   }

@@ -57,11 +57,11 @@ afterEach(() => { globalThis.fetch = realFetch; mock.timers.reset(); });
 const vn = (s) => Date.parse(s + '+07:00');
 function setNow(s) { mock.timers.reset(); mock.timers.enable({ apis: ['Date'], now: vn(s) }); }
 
-async function call(method, path, { code, json, form, headers = {}, cf, ip } = {}) {
+async function call(method, path, { code, json, form, headers = {}, cf, ip, body: raw } = {}) {
   const h = { ...headers };
   if (ip) h['CF-Connecting-IP'] = ip;
   if (code) h['X-Access-Code'] = code;
-  let body;
+  let body = raw;   // raw: thân yêu cầu thô (vd JSON hỏng)
   if (json !== undefined) { body = JSON.stringify(json); h['Content-Type'] = 'application/json'; }
   if (form) { body = new FormData(); for (const [k, v] of Object.entries(form)) body.append(k, v); }
   const req = new Request('https://ts.test' + path, { method, headers: h, body });
@@ -69,7 +69,20 @@ async function call(method, path, { code, json, form, headers = {}, cf, ip } = {
   const res = await worker.fetch(req, env);
   const text = await res.text();
   let data; try { data = JSON.parse(text); } catch { data = text; }
-  return { status: res.status, data };
+  return { status: res.status, data, headers: res.headers };
+}
+// Đăng nhập theo máy: tạo khoá trên "máy", kích hoạt bằng mã, rồi ký từng request như public/app.js
+async function activate(code, { borrowed = false } = {}) {
+  const kp = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
+  const pub = Buffer.from(await crypto.subtle.exportKey('raw', kp.publicKey)).toString('base64');
+  const r = await call('POST', '/api/devices', { code, json: { pub, borrowed } });
+  return { id: r.data.deviceId, key: kp.privateKey, r };
+}
+async function signed(dev, method, path, opts = {}) {
+  const ts = opts.ts ?? Date.now();
+  const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, dev.key, new TextEncoder().encode(`${ts}.${method}.${path}`));
+  const headers = { 'X-Device': dev.id, 'X-Timestamp': String(ts), 'X-Signature': Buffer.from(sig).toString('base64') };
+  return call(method, path, { ...opts, headers });
 }
 const photo = () => new File([new Uint8Array([0xff, 0xd8, 1, 2])], 'p.jpg', { type: 'image/jpeg' });
 const desc = (seed = 1) => Array.from({ length: 128 }, (_, i) => Math.sin(i * seed) * 0.08);
@@ -431,10 +444,30 @@ describe('Ca làm việc', () => {
     assert.equal(r.data.record.late, true);
   });
 
-  test('ca sáng 00:01 thuộc ngày mới; ca tối 22:20 trong giờ ân hạn không muộn', async () => {
+  test('ca sáng 06:00 (mở sớm 2 giờ) thuộc ngày mới; ca tối 22:20 trong giờ ân hạn không muộn', async () => {
     const a = await addEmp('NV01', 'An'), b = await addEmp('NV02', 'Bình');
-    setNow('2026-10-27T00:01:00'); assert.equal((await punch(a, 'in')).data.record.date, '2026-10-27');
+    setNow('2026-10-27T06:00:00'); assert.equal((await punch(a, 'in')).data.record.date, '2026-10-27');
     setNow('2026-10-26T22:20:00'); assert.equal((await punch(b, 'in', { shift: 'toi' })).data.record.late, undefined);
+  });
+
+  test('Lỗi đã gặp: 21:00 vẫn check-in được ca sáng (ca 08:00–17:00)', async () => {
+    const c = await addEmp('NV01', 'An');
+    setNow('2026-10-26T21:00:00');
+    const r = await punch(c, 'in', { shift: 'sang' });
+    assert.equal(r.status, 400);
+    assert.match(r.data.error, /06:00.*17:00/);
+    assert.equal(sent('sendPhoto').length, 0);
+    assert.equal((await punch(c, 'in', { shift: 'toi' })).status, 200);
+  });
+
+  test('check-in sớm hơn 2 giờ trước giờ vào thì chưa mở; check-out không bị giới hạn khung giờ', async () => {
+    const c = await addEmp('NV01', 'An');
+    setNow('2026-10-26T05:59:00');
+    assert.equal((await punch(c, 'in', { shift: 'sang' })).status, 400);
+    setNow('2026-10-26T06:00:00');
+    assert.equal((await punch(c, 'in', { shift: 'sang' })).status, 200);
+    setNow('2026-10-26T19:00:00');   // tăng ca, check-out ngoài khung giờ ca vẫn được
+    assert.equal((await punch(c, 'out')).status, 200);
   });
 
   test('đang trong ca thì không check-in ca khác', async () => {
@@ -783,6 +816,226 @@ describe('Giới hạn tần suất (Workers Rate Limiting)', () => {
   });
 });
 
+describe('Đăng nhập theo máy (mã kích hoạt không lưu trên máy)', () => {
+  test('kích hoạt bằng mã rồi mọi request chỉ cần chữ ký của máy', async () => {
+    setNow('2026-10-26T08:00:00');
+    const c = await addEmp('NV01', 'An');
+    const dev = await activate(c);
+    assert.equal(dev.r.status, 200, JSON.stringify(dev.r.data));
+    assert.match(dev.id, /^d_[0-9a-f]{16,}$/);
+    assert.equal(dev.r.data.me.code, 'NV01');
+    const me = await signed(dev, 'GET', '/api/me');
+    assert.equal(me.status, 200);
+    assert.equal(me.data.code, 'NV01');
+    assert.equal((await signed(dev, 'POST', '/api/punch', { form: { type: 'in', shift: 'sang', photo: photo() } })).status, 200);
+  });
+
+  test('Lỗi đã gặp: chép thông tin đăng nhập từ F12 sang máy khác vẫn dùng được', async () => {
+    setNow('2026-10-26T08:00:00');
+    const c = await addEmp('NV01', 'An');
+    const dev = await activate(c);
+    // máy khác chép được mã máy (X-Device) nhưng không có khoá bí mật (không xuất ra được)
+    const other = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
+    const r = await signed({ id: dev.id, key: other.privateKey }, 'GET', '/api/me');
+    assert.equal(r.status, 401);
+    assert.equal(r.data.code, 'INVALID_SIGNATURE');
+    // chép nguyên một request đã ký: chữ ký gắn với đường dẫn, dùng cho đường dẫn khác không được
+    const ts = Date.now();
+    const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, dev.key, new TextEncoder().encode(`${ts}.GET./api/me`));
+    const h = { 'X-Device': dev.id, 'X-Timestamp': String(ts), 'X-Signature': Buffer.from(sig).toString('base64') };
+    assert.equal((await call('GET', '/api/status', { headers: h })).data.code, 'INVALID_SIGNATURE');
+  });
+
+  test('chữ ký cũ hơn 5 phút bị từ chối, kèm giờ server để app chỉnh lệch đồng hồ', async () => {
+    setNow('2026-10-26T08:00:00');
+    const dev = await activate(await addEmp('NV01', 'An'));
+    const r = await signed(dev, 'GET', '/api/me', { ts: Date.now() - 6 * 60e3 });
+    assert.equal(r.status, 401);
+    assert.equal(r.data.code, 'SIGNATURE_EXPIRED');
+    assert.equal(r.data.serverTime, Date.now());
+    assert.equal((await signed(dev, 'GET', '/api/me', { ts: Date.now() - 4 * 60e3 })).status, 200);
+  });
+
+  test('không giới hạn số máy: mượn điện thoại người khác để tự chấm công', async () => {
+    const c = await addEmp('NV01', 'An');
+    const devs = [];
+    for (let i = 0; i < 4; i++) devs.push(await activate(c));
+    for (const d of devs) assert.equal((await signed(d, 'GET', '/api/me')).status, 200);
+  });
+
+  test('máy mượn: chấm công xong thì máy tự đăng xuất', async () => {
+    setNow('2026-10-26T08:00:00');
+    const c = await addEmp('NV01', 'An');
+    const dev = await activate(c, { borrowed: true });
+    const r = await signed(dev, 'POST', '/api/punch', { form: { type: 'in', shift: 'sang', photo: photo() } });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.signedOut, true);
+    assert.equal((await signed(dev, 'GET', '/api/me')).data.code, 'DEVICE_REVOKED');
+  });
+
+  test('máy mượn quá 24 giờ không chấm công thì hết hạn', async () => {
+    setNow('2026-10-26T08:00:00');
+    const dev = await activate(await addEmp('NV01', 'An'), { borrowed: true });
+    setNow('2026-10-27T08:01:00');
+    assert.equal((await signed(dev, 'GET', '/api/me')).data.code, 'DEVICE_REVOKED');
+  });
+
+  test('đăng xuất chỉ thu hồi máy đó; đổi mã kích hoạt hoặc "đăng xuất mọi máy" thì thu hồi hết', async () => {
+    const c = await addEmp('NV01', 'An');
+    const a = await activate(c), b = await activate(c), d = await activate(c);
+    assert.equal((await signed(a, 'DELETE', '/api/devices')).status, 200);
+    assert.equal((await signed(a, 'GET', '/api/me')).data.code, 'DEVICE_REVOKED');
+    assert.equal((await signed(b, 'GET', '/api/me')).status, 200);
+    assert.equal((await call('DELETE', '/api/devices?code=NV01', { code: ROOT })).status, 200);
+    assert.equal((await signed(b, 'GET', '/api/me')).data.code, 'DEVICE_REVOKED');
+    assert.equal((await signed(d, 'GET', '/api/me')).data.code, 'DEVICE_REVOKED');
+    const e = await activate(c);
+    await call('POST', '/api/employees/code?code=NV01', { code: ROOT });
+    assert.equal((await signed(e, 'GET', '/api/me')).data.code, 'DEVICE_REVOKED');
+  });
+
+  test('sửa thông tin nhân viên không làm mất máy đã kích hoạt; danh sách không lộ khoá công khai', async () => {
+    const c = await addEmp('NV01', 'An');
+    const dev = await activate(c);
+    await call('PUT', '/api/employees', { code: ROOT, json: { code: 'NV01', name: 'An mới' } });
+    assert.equal((await signed(dev, 'GET', '/api/me')).data.name, 'An mới');
+    const list = (await call('GET', '/api/employees', { code: ROOT })).data;
+    assert.equal(list[0].devices, 1);
+    assert.doesNotMatch(JSON.stringify(list), /"pub"/);
+  });
+
+  test('quản trị gốc cũng đăng nhập theo máy', async () => {
+    const dev = await activate(ROOT);
+    assert.equal(dev.r.status, 200);
+    assert.equal((await signed(dev, 'GET', '/api/me')).data.root, true);
+    assert.equal((await signed(dev, 'GET', '/api/employees')).status, 200);
+  });
+
+  test('kích hoạt bằng mã sai hoặc khoá công khai hỏng thì từ chối', async () => {
+    assert.equal((await call('POST', '/api/devices', { code: 'SAIMA', json: { pub: 'AAAA' } })).status, 401);
+    const c = await addEmp('NV01', 'An');
+    const r = await call('POST', '/api/devices', { code: c, json: { pub: 'không-phải-khoá' } });
+    assert.equal(r.status, 400);
+    assert.equal(r.data.code, 'INVALID_DEVICE_KEY');
+  });
+});
+
+describe('Không gian dữ liệu TEST / UAT (cùng địa chỉ, khác dữ liệu)', () => {
+  const UAT = 'root-uat-key';
+  const addUat = async (code, name, extra = {}) => {
+    const r = await call('PUT', '/api/employees', { code: UAT, json: { code, name, descriptors: [desc()], ...extra } });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    return r.data.accessCode;
+  };
+  beforeEach(() => { env.ADMIN_KEY_UAT = UAT; });
+
+  test('Lỗi đã gặp: key admin mới cho UAT nhưng dùng chung dữ liệu với môi trường test', async () => {
+    await addEmp('NV01', 'Người test');
+    await addUat('KH01', 'Khách UAT');
+    assert.deepEqual((await call('GET', '/api/employees', { code: ROOT })).data.map(e => e.code), ['NV01']);
+    assert.deepEqual((await call('GET', '/api/employees', { code: UAT })).data.map(e => e.code), ['KH01']);
+    assert.ok(env.KV.m.has('uat:employees'), 'dữ liệu UAT nằm dưới tiền tố uat:');
+  });
+
+  test('chấm công UAT chỉ hiện ở Bảng công UAT; ảnh Telegram ghi rõ môi trường', async () => {
+    setNow('2026-10-28T08:00:00');
+    const t = await addEmp('NV01', 'Người test'), u = await addUat('KH01', 'Khách UAT');
+    await punch(t, 'in'); await punch(u, 'in');
+    assert.deepEqual((await call('GET', '/api/logs', { code: ROOT })).data.map(l => l.code), ['NV01']);
+    assert.deepEqual((await call('GET', '/api/logs', { code: UAT })).data.map(l => l.code), ['KH01']);
+    assert.match(sent('sendPhoto')[0].body.caption, /^\[TEST\]/);
+    assert.match(sent('sendPhoto')[1].body.caption, /^\[UAT\]/);
+    assert.equal((await call('GET', '/api/status', { code: u })).data.open.shift, 'sang');
+    assert.equal((await call('GET', '/api/status', { code: t })).data.open.shift, 'sang');
+  });
+
+  test('/api/me cho biết đang ở môi trường nào', async () => {
+    const u = await addUat('KH01', 'Khách UAT');
+    assert.equal((await call('GET', '/api/me', { code: u })).data.space, 'uat');
+    assert.equal((await call('GET', '/api/me', { code: UAT })).data.space, 'uat');
+    assert.equal((await call('GET', '/api/me', { code: ROOT })).data.space, 'test');
+  });
+
+  test('đăng nhập theo máy ở UAT: mã máy u_, ký request thấy dữ liệu UAT', async () => {
+    await addEmp('NV01', 'Người test');
+    const u = await addUat('KH01', 'Khách UAT');
+    const dev = await activate(u);
+    assert.match(dev.id, /^u_/);
+    assert.equal((await signed(dev, 'GET', '/api/me')).data.code, 'KH01');
+    const root = await activate(UAT);
+    assert.deepEqual((await signed(root, 'GET', '/api/employees')).data.map(e => e.code), ['KH01']);
+  });
+
+  test('cron tổng hợp riêng từng môi trường, có nhãn', async () => {
+    setNow('2026-10-28T08:00:00');
+    const t = await addEmp('NV01', 'Người test'), u = await addUat('KH01', 'Khách UAT');
+    await punch(t, 'in'); await punch(u, 'in');
+    setNow('2026-10-28T18:30:00');
+    const jobs = []; await worker.scheduled({}, env, { waitUntil: p => jobs.push(p) }); await Promise.all(jobs);
+    const texts = sent('sendMessage').map(m => m.body.text);
+    assert.equal(texts.length, 2);
+    assert.ok(texts.some(x => /^\[TEST\]/.test(x) && x.includes('Người test') && !x.includes('Khách UAT')));
+    assert.ok(texts.some(x => /^\[UAT\]/.test(x) && x.includes('Khách UAT') && !x.includes('Người test')));
+  });
+
+  test('chưa đặt ADMIN_KEY_UAT thì không đăng nhập được UAT', async () => {
+    delete env.ADMIN_KEY_UAT;
+    assert.equal((await call('GET', '/api/me', { code: UAT })).status, 401);
+  });
+});
+
+describe('Định dạng lỗi trả về', () => {
+  const shape = (r, status, code) => {
+    assert.equal(r.status, status);
+    assert.equal(r.data.status, status, 'có status trong nội dung');
+    assert.equal(r.data.code, code);
+    assert.equal(typeof r.data.error, 'string');
+    assert.ok(r.data.error.length > 0);
+    assert.match(r.data.requestId, /^[\w-]{6,}$/, 'có mã tra cứu');
+    assert.equal(r.headers.get('X-Request-Id'), r.data.requestId);
+  };
+
+  test('Lỗi đã gặp: lỗi chỉ có "error", không có status, mã lỗi hay mã tra cứu', async () => {
+    shape(await call('GET', '/api/me', { code: 'SAIMA' }), 401, 'INVALID_ACCESS_CODE');
+    shape(await call('GET', '/api/me'), 401, 'MISSING_ACCESS_CODE');
+  });
+
+  test('mã lỗi theo từng trường hợp', async () => {
+    setNow('2026-10-26T08:00:00');
+    const c = await addEmp('NV01', 'An');
+    shape(await call('GET', '/api/employees', { code: c }), 403, 'ADMIN_ONLY');
+    shape(await call('GET', '/api/khong-co', { code: c }), 404, 'NOT_FOUND');
+    shape(await punch(c, 'in', { shift: 'toi' }), 400, 'SHIFT_CLOSED');
+    await punch(c, 'in');
+    setNow('2026-10-26T08:05:00');
+    shape(await punch(c, 'in'), 409, 'SHIFT_IN_PROGRESS');   // chưa check-out thì ca vẫn đang mở
+    shape(await call('GET', '/api/logs?from=2026-01-01&to=2026-12-31', { code: ROOT }), 400, 'INVALID_REQUEST');
+  });
+
+  test('giới hạn tần suất: 429 kèm Retry-After', async () => {
+    env.RL_ACTION = new FakeRL(1);
+    await call('POST', '/api/report-now', { code: ROOT });
+    const r = await call('POST', '/api/report-now', { code: ROOT });
+    shape(r, 429, 'RATE_LIMITED');
+    assert.equal(r.headers.get('Retry-After'), '60');
+    assert.equal(r.data.retryAfter, 60);
+  });
+
+  test('Lỗi đã gặp: lỗi nội bộ (vd KV) trả nguyên thông báo kỹ thuật ra ngoài', async () => {
+    env.KV.putFail = () => true;
+    const r = await call('PUT', '/api/employees', { code: ROOT, json: { code: 'NV01', name: 'An', descriptors: [desc()] } });
+    shape(r, 500, 'INTERNAL_ERROR');
+    assert.doesNotMatch(r.data.error, /KV|put\(\)|limit exceeded/i, 'không lộ chi tiết nội bộ');
+  });
+
+  test('Telegram lỗi: 502 kèm mã riêng', async () => {
+    setNow('2026-10-26T08:00:00');
+    const c = await addEmp('NV01', 'An');
+    tgFailNext = 10;
+    shape(await punch(c, 'in'), 503, 'TELEGRAM_BUSY');
+  });
+});
+
 describe('Telegram giới hạn tốc độ', () => {
   test('Lỗi đã gặp: Telegram báo gửi quá nhanh (429) thì server tự chờ và gửi lại', async () => {
     setNow('2026-10-26T08:00:00');
@@ -953,4 +1206,36 @@ describe('Lịch tự động', () => {
 test('đường dẫn không phải API thì trả về giao diện', async () => {
   const r = await worker.fetch(new Request('https://ts.test/index.html'), env);
   assert.equal(await r.text(), 'asset');
+});
+
+describe('Số đo Core Web Vitals (/api/vitals)', () => {
+  const sample = { id: 'abc', device: 'phone', view: 'kiosk', net: '4g', metrics: {
+    LCP: { value: 1830, rating: 'good', target: 'main>#stage', loadDelay: 12, secret: 'x' },
+    INP: { value: 240, rating: 'needs-improvement', inputDelay: 180, processing: 30, presentation: 30, script: { url: 'https://cdn/face-api.js', fn: 'detect', ms: 170, extra: 1 } },
+    CLS: { value: 0.04, rating: 'good', target: '.msg-card' },
+    HACK: { value: 1 },
+  } };
+  test('không cần đăng nhập, chỉ ghi một dòng log, không ghi KV (không tốn hạn mức ghi)', async () => {
+    const logs = mock.method(console, 'log', () => {});
+    const before = env.KV.puts || 0;
+    const r = await call('POST', '/api/vitals', { json: sample });
+    assert.equal(r.status, 204);
+    assert.equal(env.KV.puts || 0, before, 'không ghi KV');
+    assert.equal(logs.mock.callCount(), 1);
+    const line = JSON.parse(logs.mock.calls[0].arguments[0]);
+    logs.mock.restore();
+    assert.equal(line.type, 'web-vitals');
+    assert.deepEqual(Object.keys(line.metrics).sort(), ['CLS', 'INP', 'LCP'], 'bỏ số đo lạ');
+    assert.equal(line.metrics.LCP.secret, undefined, 'bỏ trường lạ');
+    assert.equal(line.metrics.INP.script.fn, 'detect');
+    assert.equal(line.metrics.INP.script.extra, undefined);
+  });
+  test('gói quá lớn hoặc hỏng thì từ chối; không có số đo nào thì không ghi gì', async () => {
+    assert.equal((await call('POST', '/api/vitals', { json: { metrics: { LCP: { value: 1, target: 'x'.repeat(5000) } } } })).status, 413);
+    assert.equal((await call('POST', '/api/vitals', { body: '{', headers: { 'Content-Type': 'application/json' } })).status, 400);
+    const logs = mock.method(console, 'log', () => {});
+    assert.equal((await call('POST', '/api/vitals', { json: { metrics: {} } })).status, 204);
+    assert.equal(logs.mock.callCount(), 0);
+    logs.mock.restore();
+  });
 });

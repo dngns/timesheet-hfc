@@ -554,7 +554,7 @@ describe('app.js dùng face-logic.js', () => {
       ['tải ảnh khuôn mặt', /async function addUpload[\s\S]*checkUpload\(/],
       ['ảnh đại diện', /\/api\/avatar\?code=/],
     ]) assert.match(app, re, what);
-    for (const id of ['btnImport', 'importDlg', 'shiftOpts', 'geoInfo', 'btnUploadFace', 'faceFiles', 'eShift']) {
+    for (const id of ['btnImport', 'importDlg', 'shiftOpts', 'shiftNow', 'geoInfo', 'btnUploadFace', 'faceFiles', 'eShift']) {
       assert.match(html, new RegExp(`id="${id}"`), id);
       assert.match(app, new RegExp(`\\$\\('${id}'\\)`), 'app.js dùng ' + id);
     }
@@ -571,17 +571,31 @@ describe('app.js dùng face-logic.js', () => {
     assert.match(app, /document\.body\.classList\.toggle\('solo', !isAdmin\(\)\)/, 'nhân viên: ẩn thanh điều hướng một mục');
     const mobile = [...html.matchAll(/@media \(max-width:760px\)\{([\s\S]*?)\n  \}/g)].map(m => m[1]).join('\n');
     assert.match(mobile, /body\.solo \.nav\{display:none\}/);
-    assert.match(mobile, /\.punch\{position:sticky;bottom:/, 'nút chấm công dính đáy màn hình');
-    assert.match(mobile, /\.stage\{[^}]*svh/, 'khung camera giới hạn theo chiều cao màn hình');
+    // Cách sửa đầu tiên (nút dính đáy, camera 48svh) vẫn phải cuộn trên màn thấp, và cuộn thì camera trôi khỏi màn:
+    // không thấy khuôn mặt đã xác minh chưa. Giờ màn Chấm công cao đúng một màn hình, không cuộn: camera tràn kín màn,
+    // nút và chọn ca nổi trên video ở đáy, nên luôn nằm trong màn hình. Áp cho mọi cỡ màn (máy tính cũng vậy),
+    // nên kiểm tra CSS chung chứ không chỉ khối điện thoại.
+    const css = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+    const outside = css.replace(/@media[^{]*\{(?:[^{}]*\{[^}]*\})*[^{}]*\}/g, '');   // bỏ các khối @media
+    assert.match(outside, /body:has\(#view-kiosk:not\(\[hidden\]\)\)\{height:100svh;overflow:hidden;display:flex;flex-direction:column\}/, 'màn chấm công cao đúng một màn hình, không cuộn (mọi cỡ màn)');
+    assert.match(outside, /#stageHome \.stage\{position:absolute;inset:0;/, 'camera phủ kín màn hình (mọi cỡ màn)');
+    assert.match(outside, /\.side\{position:absolute;left:0;right:0;bottom:0;/, 'nút chấm công ghim ở đáy màn hình, nổi trên video (mọi cỡ màn)');
+    assert.doesNotMatch(css, /\.stage\{[^}]*height:clamp/, 'camera không đặt cứng chiều cao (cứng thì màn thấp đẩy nút xuống dưới)');
   });
 
-  test('Lỗi đã gặp: khung oval nhỏ hơn khuôn mặt thật khi cầm điện thoại chụp (cố định 38% bề ngang)', () => {
-    // khung cũ là ellipse cố định trong SVG 400×300: rx 76 → chỉ 38% bề ngang, mặt người tràn ra ngoài
+  test('Lỗi đã gặp: khung oval cố định theo pixel trong SVG, không co theo khung camera (máy tính, điện thoại khác nhau)', () => {
+    // Khung cũ: ellipse cố định trong SVG 400×300 (rx 76). Lần sửa sau đặt 59% bề ngang thì lại quá to trên máy tính
+    // (mặt ngồi trước webcam chỉ ~30% khung). Giờ: oval đứng yên làm khung hướng dẫn, cỡ vừa phải theo từng loại màn hình.
     assert.doesNotMatch(html, /<ellipse class="ring"/);
-    const rule = html.match(/\.guide \.oval\{([^}]*)\}/)?.[1] || '';
-    const cqw = Number(rule.match(/width:min\((\d+)cqw/)?.[1]);
-    assert.ok(cqw >= 55, `oval rộng ít nhất 55% khung camera (đang ${cqw || '?'}%)`);
-    assert.match(rule, /aspect-ratio:3\/4/, 'giữ tỉ lệ khuôn mặt');
+    const pct = css => Number(css.match(/width:min\((\d+)cqw/)?.[1]);
+    const desk = pct(html.match(/\.guide \.oval\{([^}]*)\}/)?.[1] || '');
+    assert.ok(desk >= 32 && desk <= 42, `máy tính: oval rộng 32–42% khung (đang ${desk || '?'}%)`);
+    // chỉ các khối @media nhiều dòng (khối một dòng như {main{padding:16px}} làm regex chạy lan sang CSS máy tính)
+    const mobile = [...html.matchAll(/@media \(max-width:760px\)\{\n([\s\S]*?)\n  \}/g)].map(m => m[1]).join('\n');
+    const phone = pct(mobile.match(/\.guide \.oval\{([^}]*)\}/)?.[1] || '');
+    assert.ok(phone >= 45 && phone <= 56, `điện thoại (mặt gần camera hơn): oval rộng 45–56% khung (đang ${phone || '?'}%)`);
+    assert.match(html, /\.guide \.oval\{[^}]*aspect-ratio:3\/4/, 'giữ tỉ lệ khuôn mặt');
+    assert.doesNotMatch(html, /\.oval\.track/, 'oval đứng yên, không chạy theo mặt');
   });
 
   test('index.html nạp đủ các file logic dùng chung trước app.js', () => {

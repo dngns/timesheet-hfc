@@ -14,14 +14,18 @@
 <meta name="apple-mobile-web-app-title" content="Timesheet">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=Big+Shoulders+Display:wght@600;700;800&display=swap" rel="stylesheet">
+<!-- Font từ Google không chặn hiển thị: trang vẽ ngay bằng font hệ thống rồi đổi sang (display=swap). Big Shoulders chỉ dùng 700, 800. -->
+<link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&amp;family=Big+Shoulders+Display:wght@700;800&amp;display=swap" onload="this.onload=null;this.rel='stylesheet'">
+<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&amp;family=Big+Shoulders+Display:wght@700;800&amp;display=swap"></noscript>
+<!-- Bộ nhận diện (~1,3MB): tải ngay song song, nhưng chạy sau mã của app (app tự nạp khi cần) để giao diện phản hồi trước -->
+<link rel="preload" as="script" href="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/dist/face-api.js" crossorigin="anonymous">
 <style>
   /* Giấy sổ công + mực dấu: nền xám lục, mực xanh cho giờ vào, mực chàm cho giờ ra */
   :root{
     --paper:#eceee8; --sheet:#f8f9f5; --sheet-2:#e3e6de; --ink:#1b2420; --ink-soft:#5c6760; --rule:#d3d8cd;
     --in:#17734a; --in-wash:#dcebe1; --out:#4a3db0; --out-wash:#e4e1f5;
     --late:#a35c00; --late-wash:#f5e7cf; --error:#b42318; --error-wash:#f8e1de;
-    --focus:#4a3db0;
+    --focus:#1b2420;   /* vòng focus cùng màu mực của nút chính */
     --display:"Big Shoulders Display","Arial Narrow",sans-serif;
     --body:"Be Vietnam Pro",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
     --nav-h:62px;
@@ -30,7 +34,7 @@
     :root{
       --paper:#121714; --sheet:#1a201c; --sheet-2:#232b26; --ink:#e6eae2; --ink-soft:#97a299; --rule:#2c3530;
       --in:#4cc48a; --in-wash:#173325; --out:#9d93ff; --out-wash:#26223f;
-      --late:#f0ac45; --late-wash:#3a2c12; --error:#ff7b6e; --error-wash:#3d1915; --focus:#9d93ff;
+      --late:#f0ac45; --late-wash:#3a2c12; --error:#ff7b6e; --error-wash:#3d1915; --focus:#e6eae2;
     }
   }
   *{box-sizing:border-box}
@@ -67,7 +71,7 @@
     main{padding-bottom:calc(var(--nav-h) + env(safe-area-inset-bottom) + 20px)!important}
     /* nhân viên chỉ có màn chấm công: bỏ thanh điều hướng một mục, trả chỗ cho nút chấm công */
     body.solo .nav{display:none}
-    body.solo .who{display:none}   /* tên đã hiện ngay dưới camera */
+    body.solo .brand span{display:none}   /* nhường chỗ cho tên người dùng trên thanh trên */
     body.solo main{padding-bottom:calc(env(safe-area-inset-bottom) + 20px)!important}
   }
 
@@ -93,7 +97,7 @@
   .field{display:flex;flex-direction:column;gap:5px;min-width:0}
   .field label{font-size:13px;font-weight:500;color:var(--ink-soft)}
   .input{width:100%;min-width:0;padding:9px 11px;border-radius:6px;border:1px solid var(--rule);background:var(--sheet)}
-  .input:focus{outline:none;border-color:var(--focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 22%,transparent)}
+  .input:focus{outline:none;border-color:var(--focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 14%,transparent)}
   .search{position:relative;display:block;flex:1;min-width:180px}
   .search svg{position:absolute;left:10px;top:50%;transform:translateY(-50%);width:17px;height:17px;color:var(--ink-soft)}
   .search .input{padding-left:34px}
@@ -108,7 +112,10 @@
   .stage video,.stage canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
   /* Khung mặt: co theo khung camera (cỡ khuôn mặt khi cầm điện thoại ngang tầm mắt), không cố định theo pixel */
   .guide{position:absolute;inset:0;pointer-events:none;overflow:hidden}
-  .guide .oval{position:absolute;left:50%;top:50%;width:58%;width:min(60cqw,66cqh);aspect-ratio:3/4;transform:translate(-50%,-46%);border-radius:50%;box-shadow:0 0 0 200vmax rgba(7,10,8,.38)}
+  /* Oval đứng yên giữa khung, người dùng đưa mặt vào. Cỡ theo khoảng cách thường gặp: ngồi trước webcam mặt chiếm
+     khoảng 30–35% bề ngang khung; điện thoại cầm tay mặt gần camera hơn nên oval to hơn (xem mục điện thoại bên dưới).
+     Mặt to hoặc nhỏ hơn oval thì app nhắc lùi xa / lại gần (guide.js). */
+  .guide .oval{position:absolute;left:50%;top:50%;width:36%;width:min(36cqw,62cqh);aspect-ratio:3/4;transform:translate(-50%,-50%);border-radius:50%;box-shadow:0 0 0 200vmax rgba(7,10,8,.38)}
   .guide .oval::after{content:'';position:absolute;inset:0;border-radius:inherit;border:2.5px dashed rgba(255,255,255,.65);transition:border-color .2s}
   .stage[data-state="ok"] .oval::after{border:4px solid #4cc48a}
   .stage[data-state="unknown"] .oval::after{border:3px solid #f0ac45}
@@ -118,9 +125,26 @@
   .stage[data-state="ok"] .pill i{background:#4cc48a}
   .stage[data-state="unknown"] .pill i{background:#f0ac45}
   .stage[data-state="enroll"] .pill i{background:#9d93ff}
-  .stage-msg{position:absolute;inset:0;z-index:3;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px;text-align:center;color:#fff;background:rgba(7,10,8,.82)}
-  .stage-msg p{margin:0;max-width:40ch;color:#c9d0cb;white-space:pre-line}
-  .stage-msg svg{width:40px;height:40px;opacity:.8}
+  .stage-msg{position:absolute;inset:0;z-index:3;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center;color:#fff;background:rgba(7,10,8,.86)}
+  .msg-card{display:flex;flex-direction:column;align-items:center;gap:10px;width:min(340px,100%)}   /* bề ngang cố định: đổi chữ không làm thẻ co giãn (CLS) */
+  /* hình báo lỗi: khung quét mặt của logo, khuôn mặt mờ bên trong, khung thở nhẹ; huy hiệu ở góc đổi theo nguyên nhân */
+  .msg-ico{display:grid;place-items:center;width:96px;height:96px;margin-bottom:6px}   /* vòng xoay và hình báo lỗi cùng một ô 96px */
+  .msg-ico svg{display:block;width:96px;height:96px;fill:none;stroke-linecap:round;stroke-linejoin:round}
+  .msg-ico .scan{stroke:#fff;stroke-width:3.5;transform-box:view-box;transform-origin:48px 48px;animation:scanBreathe 2.4s ease-in-out infinite}
+  @keyframes scanBreathe{50%{transform:scale(1.06)}}
+  .msg-ico .face{stroke:rgba(255,255,255,.35);stroke-width:3}
+  .msg-ico .face circle{fill:rgba(255,255,255,.35);stroke:none}
+  .msg-ico .badge > circle{fill:#f0ac45}
+  .msg-ico .badge g{display:none;stroke:#0b0d0c;stroke-width:2.4}
+  .msg-ico .badge .cut{stroke:#f0ac45;stroke-width:5.5}
+  .msg-ico[data-badge="lock"] .b-lock,.msg-ico[data-badge="missing"] .b-missing,.msg-ico[data-badge="busy"] .b-busy,.msg-ico[data-badge="error"] .b-error{display:inline}
+  #stageMsgTitle{font-size:18px;font-weight:600;line-height:1.3}
+  .stage-msg p{margin:0;color:#c9d0cb;font-size:14.5px;line-height:1.55;white-space:pre-line}
+  .stage-msg .btn{margin-top:8px;padding:11px 20px;border-color:#fff;background:#fff;color:#1b2420;font-weight:600}
+  /* mã lỗi gốc để báo lại cho quản trị viên khi cần; không chen vào câu hướng dẫn */
+  .stage-msg .msg-detail{font-size:12px;color:rgba(255,255,255,.45);margin-top:2px;overflow-wrap:anywhere}
+  /* đang báo lỗi hay đang tải: oval và dòng trạng thái không có ý nghĩa, ẩn đi */
+  .stage[data-msg] .guide,.stage[data-msg] .pill{visibility:hidden}
   .spinner{width:36px;height:36px;border-radius:50%;border:3px solid rgba(255,255,255,.2);border-top-color:#fff;animation:spin .9s linear infinite}
   @keyframes spin{to{transform:rotate(360deg)}}
   .dbg{position:absolute;left:10px;bottom:10px;z-index:2;padding:4px 8px;border-radius:6px;background:rgba(7,10,8,.7);color:#e6eae2;font-size:12px;font-variant-numeric:tabular-nums}
@@ -160,14 +184,11 @@
   }
   @media (hover:none){.punch .pk{display:none}}
 
-  .person{display:flex;align-items:center;gap:14px;min-height:64px}
   .avatar{width:54px;height:54px;border-radius:12px;display:flex;align-items:center;justify-content:center;flex:none;line-height:1;font-weight:700;font-size:18px;color:#fff}
   .avatar.sm{width:36px;height:36px;border-radius:9px;font-size:13.5px}
   .avatar.blank{background:var(--sheet-2);color:var(--ink-soft)}
   .avatar.blank svg{display:block;width:26px;height:26px;flex:none}
   .avatar.sm.blank svg{width:18px;height:18px}
-  .p-name{font-size:20px;font-weight:600;line-height:1.25}
-  .p-meta{font-size:14px;color:var(--ink-soft)}
 
   .shift-pick{margin-top:16px}
   .step{font-size:13.5px;font-weight:600;color:var(--ink-soft);margin:0 0 8px}
@@ -204,20 +225,74 @@
   .punch:active{transform:translateY(1px)}
   .punch:disabled{background:var(--sheet-2);color:var(--ink-soft);cursor:not-allowed;transform:none}
   .punch:disabled .pk{display:none}
-  /* Điện thoại: camera vừa nửa màn hình, nút chấm công luôn ở đáy trong tầm ngón cái (không phải cuộn tìm) */
+  /* Tự check-in (autopunch.js): vòng sáng chạy quanh oval trong lúc đếm, bên cạnh nút có nút Huỷ */
+  .guide .oval .ring{position:absolute;inset:-6px;width:calc(100% + 12px);height:calc(100% + 12px);overflow:visible;opacity:0;transition:opacity .2s}
+  /* oval luôn 3:4 nên vòng vẽ đúng tỉ lệ đó (không kéo giãn); bắt đầu ở đỉnh oval, chạy theo chiều kim đồng hồ */
+  .guide .oval .ring path{fill:none;stroke:#fff;stroke-width:1.6;stroke-linecap:round;stroke-dasharray:100;stroke-dashoffset:100}
+  .stage.counting .oval .ring{opacity:1}
+  .stage.counting .oval .ring path{animation:autoRing var(--auto-ms,3000ms) linear forwards}
+  @keyframes autoRing{to{stroke-dashoffset:0}}
+  .punch-row{display:flex;gap:8px;margin-top:16px}
+  .punch-row .punch{margin-top:0;flex:1;min-width:0}
+  .auto-cancel{flex:none;width:96px;border-radius:12px;border:1.5px solid var(--rule);background:var(--sheet);font-weight:600;font-size:16px}
+
+  /* Màn Chấm công (mọi cỡ màn): camera tràn kín cửa sổ như app camera; thanh trên, chọn ca, nút nổi trên video.
+     Không bao giờ cuộn, nên lúc nào cũng thấy cả khuôn mặt (đã xác minh chưa) lẫn nút, kể cả màn thấp. */
+  body:has(#view-kiosk:not([hidden])){height:100svh;overflow:hidden;display:flex;flex-direction:column}
+  body:has(#view-kiosk:not([hidden])){background:#070a08;--badge-ring:#070a08}
+  body:has(#view-kiosk:not([hidden])) .topbar{position:absolute;left:0;right:0;top:0;background:none;border-bottom:0;color:#fff}
+  body:has(#view-kiosk:not([hidden])) .topbar .icon-btn{color:rgba(255,255,255,.85)}
+  body:has(#view-kiosk:not([hidden])) .topbar .icon-btn:hover{background:rgba(255,255,255,.12);color:#fff}
+  body:has(#view-kiosk:not([hidden])) .topbar .btn.sm{background:rgba(255,255,255,.12);border-color:transparent;color:#fff}
+  body:has(#view-kiosk:not([hidden])) .net{color:rgba(255,255,255,.75)}
+  body:has(#view-kiosk:not([hidden])) main{flex:1;min-height:0;width:100%;max-width:none;padding:0!important;position:relative}
+  .kiosk{position:absolute;inset:0;display:block}
+  #stageHome{position:absolute;inset:0}
+  #stageHome .stage{position:absolute;inset:0;height:auto;aspect-ratio:auto;border-radius:0}
+  /* oval canh giữa phần video còn thấy được: từ dưới thanh trên và dòng trạng thái (105px) tới mép trên cụm nút
+     (--dock, app đo). --ow là bề ngang oval, --oy tâm oval; dòng trạng thái gắn ngay trên đỉnh oval. */
+  #stageHome .stage{--ow:min(36cqw,(100cqh - var(--dock,200px) - 125px) * .75);--oy:calc((105px + 100cqh - var(--dock,200px)) / 2)}
+  #stageHome .guide .oval{top:var(--oy);width:var(--ow)}
+  #stageHome .stage .pill{top:max(calc(max(10px,env(safe-area-inset-top)) + 54px),calc(var(--oy) - var(--ow) * 2 / 3 - 46px))}
+  /* thẻ báo lỗi / đang tải: canh giữa phần màn giữa thanh trên và cụm nút */
+  /* neo thẻ theo mép trên (không canh giữa): đổi từ "Đang tải" sang "Không mở được camera" chỉ thêm dòng ở dưới,
+     tiêu đề và chữ không bị xô (giảm dịch chuyển bố cục CLS). Khoảng đệm trên tính để thẻ lớn nhất (~340px) vẫn nằm giữa. */
+  #stageHome .stage-msg{align-items:flex-start;padding:calc(max(10px,env(safe-area-inset-top)) + 62px + max(0px,(100cqh - 200px - 62px - 340px) / 2)) 24px calc(var(--dock,200px) + 12px)}
+  .side{position:absolute;left:0;right:0;bottom:0;z-index:5;padding:40px 16px calc(env(safe-area-inset-bottom) + 20px);background:linear-gradient(0deg,rgba(7,10,8,.88) 55%,rgba(7,10,8,0));color:#fff}
+  /* màn rộng: cụm nút ở giữa, không kéo dài hết bề ngang */
+  .side > section{padding:0;border:0;width:100%;max-width:560px;margin:0 auto}
+  /* giờ đã hiện trên nút chấm công, đồng hồ lớn bỏ đi */
+  .side .s-clock{display:none}
+  /* chọn ca gọn một hàng trên nền video: tên ca bên trái, giờ (hoặc giờ mở) bên phải */
+  .shift-pick{margin:0 0 10px}
+  .shift-pick .step{display:none}
+  .shift-opts button{flex-direction:row;align-items:baseline;justify-content:space-between;gap:6px;padding:10px 12px;white-space:nowrap;background:rgba(255,255,255,.12);border-color:transparent;color:#fff}
+  .shift-opts button span{font-size:17px;color:rgba(255,255,255,.75)}
+  .shift-opts button[aria-checked="true"]{background:#fff;border-color:#fff;color:#1b2420}
+  .shift-opts button[aria-checked="true"] span{color:#1b2420}
+  .shift-now{margin:0 0 10px;background:rgba(255,255,255,.12);color:#fff}
+  /* cảnh báo vị trí nổi ngay trên cụm nút (không nằm trong cụm): hiện ra không đẩy chọn ca và nút lên (CLS) */
+  .side .geo{position:absolute;left:50%;bottom:calc(100% - 32px);transform:translateX(-50%);width:min(560px,calc(100% - 32px));margin:0;padding:8px 12px;border-radius:10px;background:rgba(7,10,8,.78);color:rgba(255,255,255,.75)}
+  .geo.warn{color:#f0ac45}
+  .punch-row{margin-top:0}
+  .punch:disabled{background:rgba(255,255,255,.16);color:rgba(255,255,255,.72)}
+  .auto-cancel{background:none;border-color:rgba(255,255,255,.55);color:#fff}
+  /* thanh điều hướng của quản trị (máy tính: trên thanh trên) nằm trên video */
+  body:has(#view-kiosk:not([hidden])) .nav button{color:rgba(255,255,255,.75)}
+  body:has(#view-kiosk:not([hidden])) .nav button:hover{color:#fff}
+  body:has(#view-kiosk:not([hidden])) .nav button[aria-current="page"]{color:#fff;background:rgba(255,255,255,.14)}
+  /* nhân viên chỉ có màn chấm công: thanh điều hướng một mục là thừa (điện thoại đã ẩn từ trước) */
+  body.solo .nav{display:none}
   @media (max-width:760px){
-    .kiosk{gap:14px}
-    .stage{aspect-ratio:auto;height:clamp(240px,48svh,460px);border-radius:16px}
-    .person{min-height:0;gap:12px}
-    .person .avatar{width:44px;height:44px;border-radius:10px}
-    .p-name{font-size:18px}
-    .p-meta{font-size:13.5px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-    .shift-pick{margin-top:12px}
-    .shift-opts button{padding:9px 12px}
-    .shift-opts button span{font-size:17px}
-    .punch{position:sticky;bottom:calc(var(--nav-h) + env(safe-area-inset-bottom) + 10px);z-index:10;padding:14px 16px;box-shadow:0 10px 28px rgba(0,0,0,.18)}
+    /* điện thoại cầm tay: mặt gần camera hơn nên oval to hơn */
+    .guide .oval{width:50%;width:min(50cqw,72cqh)}
+    #stageHome .stage{--ow:min(50cqw,(100cqh - var(--dock,200px) - 125px) * .75)}
+    .side{padding:32px 16px calc(env(safe-area-inset-bottom) + 16px)}
+    /* quản trị trên điện thoại: thanh điều hướng ở đáy, cụm nút nằm trên nó */
+    body:not(.solo) .side{padding-bottom:calc(var(--nav-h) + env(safe-area-inset-bottom) + 12px)}
+    .shift-opts button{padding:10px}
+    .punch{padding:14px 16px}
     .punch .pl{font-size:28px}
-    body.solo .punch{bottom:calc(env(safe-area-inset-bottom) + 12px)}
   }
   @media (prefers-color-scheme: dark){.punch:not(:disabled){color:#0f1411}}
 
@@ -301,6 +376,8 @@
   .note.ok{background:var(--in-wash);color:var(--in)}
   .note.err{background:var(--error-wash);color:var(--error)}
   .note.sync{margin-top:12px}
+  .env{margin-left:8px;padding:2px 7px;border-radius:5px;font:600 11.5px/1.4 var(--body);letter-spacing:.06em;background:var(--late-wash);color:var(--late);vertical-align:middle}
+  .env.uat{background:var(--in-wash);color:var(--in)}
   .link{background:none;border:0;padding:0;color:inherit;font:inherit;font-weight:600;text-decoration:underline;cursor:pointer}
   .link:disabled{opacity:.6;cursor:default}
   @media (max-width:760px){
@@ -311,9 +388,38 @@
   }
   .onboard{width:min(420px,calc(100% - 32px))}
   .code-input{text-align:center;font-size:20px;letter-spacing:.12em;text-transform:uppercase}
+  /* ô nhập mã: nút × xoá nhanh ở mép phải; chừa lề hai bên bằng nhau để mã vẫn nằm giữa */
+  .code-field{position:relative}
+  .code-field .code-input{padding:12px 44px}
+  .code-clear{position:absolute;right:6px;top:50%;transform:translateY(-50%);display:grid;place-items:center;width:32px;height:32px;border:0;border-radius:50%;background:none;color:var(--ink-soft)}
+  .code-clear:hover{background:var(--sheet-2);color:var(--ink)}
+  .code-clear svg{width:18px;height:18px}
+  /* điện thoại: hộp thoại kích hoạt neo lên trên và không cao quá phần màn còn thấy khi bàn phím bật
+     (--vvh = visualViewport, app đo), để bàn phím iOS không che ô nhập và nút Kích hoạt */
+  @media (max-width:760px){
+    .onboard{margin:max(12px,env(safe-area-inset-top)) auto auto;max-height:calc(var(--vvh,100svh) - 24px);overflow:auto}
+    .onboard form{padding:22px 20px 20px}
+  }
+  @media (max-width:760px) and (max-height:700px){.onboard form > img{width:44px;height:44px}.onboard h2{font-size:28px;margin-top:8px}}
+  /* lựa chọn bật/tắt: tiêu đề + mô tả bên trái, công tắc gạt bên phải, bấm cả hàng được */
+  .opt-row{display:flex;align-items:center;gap:12px;margin-top:14px;padding:12px 14px;border:1px solid var(--rule);border-radius:12px;text-align:left;cursor:pointer;transition:border-color .15s}
+  .opt-row:has(.switch:checked){border-color:var(--in)}
+  .opt-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+  .opt-text b{font-size:15px;font-weight:600}
+  .opt-text span{font-size:13.5px;color:var(--ink-soft);line-height:1.4}
+  .switch{appearance:none;-webkit-appearance:none;flex:none;position:relative;width:44px;height:26px;margin:0;border-radius:99px;background:var(--sheet-2);border:1px solid var(--rule);cursor:pointer;transition:background .2s,border-color .2s}
+  .switch::before{content:'';position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform .2s}
+  .switch:checked{background:var(--in);border-color:var(--in)}
+  .switch:checked::before{transform:translateX(18px)}
   .code-show{font-size:52px;line-height:1;padding:18px 12px;border:2px dashed var(--rule);border-radius:12px;letter-spacing:.06em;user-select:all}
-  .who{font-size:14px;font-weight:600;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  @media (max-width:760px){.net span{display:none}.who{max-width:130px}}
+  .who{display:inline-flex;align-items:center;gap:8px;font-size:14px;font-weight:600;max-width:220px;min-width:0}
+  .who > span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}   /* tên dài thì …; khung ảnh không cắt, để chấm mạng nhô ra góc */
+  .who .avatar.sm{width:28px;height:28px;border-radius:8px;font-size:11.5px}
+  /* trạng thái mạng là chấm ở góc ảnh đại diện: xanh trực tuyến, đỏ mất mạng */
+  .who-av{position:relative;display:inline-flex;flex:none}
+  .who-av .net-dot{position:absolute;right:-3px;bottom:-3px;width:10px;height:10px;border-radius:50%;background:var(--in);box-shadow:0 0 0 2px var(--badge-ring,var(--paper))}
+  body.offline .who-av .net-dot{background:var(--error)}
+  @media (max-width:760px){.net span{display:none}.who{max-width:200px}}
   .onboard form{padding:28px 24px 24px;text-align:center}
   .onboard h2{font-family:var(--display);font-weight:800;font-size:32px;margin:12px 0 6px}
 
@@ -322,11 +428,73 @@
   .viewer img{max-width:100%;max-height:calc(100% - 64px);border-radius:10px}
   .viewer .cap{color:#dfe4e0;font-size:14px;text-align:center}
   .viewer .icon-btn{position:absolute;top:max(12px,env(safe-area-inset-top));right:12px;color:#fff;background:rgba(255,255,255,.12)}
-  .toasts{position:fixed;left:50%;transform:translateX(-50%);bottom:24px;z-index:50;display:flex;flex-direction:column;gap:8px;width:min(440px,calc(100% - 32px));pointer-events:none}
-  @media (max-width:760px){.toasts{bottom:calc(var(--nav-h) + env(safe-area-inset-bottom) + 12px)}}
-  .toast{display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-radius:10px;background:#1b2420;color:#f1f3ee;box-shadow:0 10px 30px rgba(0,0,0,.25);font-size:14px;pointer-events:auto;border-left:4px solid #97a299}
-  .toast.ok{border-left-color:#4cc48a} .toast.err{border-left-color:#ff7b6e} .toast.warn{border-left-color:#f0ac45}
-  .toast .t-x{margin-left:auto;background:none;border:0;color:#97a299;padding:0 0 0 8px;font-size:18px;line-height:1}
+  /* Hộp xác nhận (askConfirm): máy tính là hộp giữa màn; điện thoại trượt lên từ đáy, nút to xếp chồng,
+     nút huỷ ở dưới cùng như hộp hành động của iOS (chỗ ngón cái hay chạm, khó lỡ tay bấm nút chính) */
+  .confirm{width:min(400px,calc(100% - 32px))}
+  .confirm form{padding:24px}
+  .confirm h2{font-size:19px;font-weight:600;margin:0 0 6px;line-height:1.35}
+  .confirm p{margin:0;color:var(--ink-soft);font-size:15px;line-height:1.5}
+  .cf-extra{margin-bottom:16px}
+  .cf-note{margin-top:14px}
+  .cf-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:22px}
+  .cf-actions .btn{min-width:96px;padding:10px 16px}
+  .btn.ink.danger{background:var(--error);border-color:var(--error);color:#fff}
+  /* thẻ tài khoản trong hộp đăng xuất */
+  .cf-acct{display:flex;align-items:center;gap:12px;padding:12px;border-radius:12px;background:var(--sheet-2)}
+  .cf-acct .avatar{width:44px;height:44px;border-radius:11px;font-size:15px}
+  .cf-acct b{display:block;font-size:15.5px}
+  .cf-acct span{font-size:13.5px;color:var(--ink-soft)}
+  .confirm[open]{animation:cfIn .18s ease-out}
+  @keyframes cfIn{from{opacity:0;transform:translateY(8px) scale(.98)}}
+  @media (max-width:760px){
+    .confirm{width:100%;max-width:100%;margin:auto 0 0;border-radius:20px 20px 0 0;max-height:calc(100% - 24px)}
+    .confirm form{padding:22px 20px calc(env(safe-area-inset-bottom) + 18px)}
+    .confirm[open]{animation:cfUp .28s cubic-bezier(.32,.72,0,1)}
+    @keyframes cfUp{from{transform:translateY(100%)}}
+    .cf-actions{flex-direction:column-reverse;gap:10px}
+    .cf-actions .btn{width:100%;padding:14px 16px;font-size:16px}
+  }
+
+  /* Thông báo kiểu Sonner (toast.js). Máy tính: góc dưới bên phải; điện thoại: giữa phía trên.
+     Mỗi thẻ neo ở mép màn, đẩy lùi bằng --y (toast.js tính), lớp phía sau nhỏ dần (--s). --dir: 1 neo đáy, -1 neo đỉnh. */
+  .toaster{position:fixed;z-index:60;right:24px;bottom:24px;width:356px;margin:0;padding:0;list-style:none;--dir:1;transition:height .4s}
+  .toaster[data-edge="top"]{top:max(12px,env(safe-area-inset-top));bottom:auto;left:16px;right:16px;width:auto;max-width:420px;margin:0 auto;--dir:-1}
+  .toast{position:absolute;left:0;right:0;bottom:0;box-sizing:border-box;display:flex;gap:10px;align-items:flex-start;padding:14px 16px;border-radius:12px;background:var(--sheet);color:var(--ink);border:1px solid var(--rule);box-shadow:0 6px 20px rgba(0,0,0,.12);font-size:14px;line-height:1.45;overflow:hidden;touch-action:none;
+    --ty:calc(var(--y,0px) * -1 * var(--dir));
+    transform:translateY(calc(var(--ty) + var(--swipe-y,0px))) translateX(var(--swipe-x,0px)) scale(var(--s,1));transform-origin:50% 100%;
+    transition:transform .4s cubic-bezier(.21,1.02,.73,1),opacity .4s,height .4s}
+  .toaster[data-edge="top"] .toast{top:0;bottom:auto;transform-origin:50% 0}
+  .toast:not([data-mounted]){transform:translateY(calc(100% * var(--dir)));opacity:0}
+  .toast[data-removed]{opacity:0;transform:translateY(calc(var(--y,0px) * -1 * var(--dir) + 30% * var(--dir))) scale(var(--s,1))}
+  .toast[data-visible="false"]{opacity:0;pointer-events:none}
+  /* đang vuốt: đi theo tay, không trễ; vuốt rồi thì không bôi đen chữ */
+  .toast[data-swiping]{transition:none}
+  .toast[data-swiped]{user-select:none}
+  /* vuốt đủ xa / đủ nhanh: trượt tiếp thêm một thân theo hướng vuốt rồi mờ đi (200ms, như Sonner) */
+  .toast[data-swipe-out]{animation:.2s ease-out forwards;transition:none}
+  .toast[data-swipe-out="up"]{animation-name:toastOutUp}
+  .toast[data-swipe-out="down"]{animation-name:toastOutDown}
+  .toast[data-swipe-out="left"]{animation-name:toastOutLeft}
+  .toast[data-swipe-out="right"]{animation-name:toastOutRight}
+  @keyframes toastOutUp{from{transform:translateY(calc(var(--ty) + var(--swipe-y,0px)));opacity:1}to{transform:translateY(calc(var(--ty) + var(--swipe-y,0px) - 100%));opacity:0}}
+  @keyframes toastOutDown{from{transform:translateY(calc(var(--ty) + var(--swipe-y,0px)));opacity:1}to{transform:translateY(calc(var(--ty) + var(--swipe-y,0px) + 100%));opacity:0}}
+  @keyframes toastOutLeft{from{transform:translateY(var(--ty)) translateX(var(--swipe-x,0px));opacity:1}to{transform:translateY(var(--ty)) translateX(calc(var(--swipe-x,0px) - 100%));opacity:0}}
+  @keyframes toastOutRight{from{transform:translateY(var(--ty)) translateX(var(--swipe-x,0px));opacity:1}to{transform:translateY(var(--ty)) translateX(calc(var(--swipe-x,0px) + 100%));opacity:0}}
+  /* gộp: lớp phía sau chỉ ló mép, ẩn chữ */
+  .toaster:not([data-expanded="true"]) .toast[data-front="false"] > *{opacity:0}
+  .toast > *{transition:opacity .4s}
+  .t-ico{flex:none;width:20px;height:20px;margin-top:1px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+  .toast[data-type="ok"] .t-ico{color:var(--in)}
+  .toast[data-type="err"] .t-ico{color:var(--error)}
+  .toast[data-type="warn"] .t-ico{color:var(--late)}
+  .toast[data-type="info"] .t-ico{color:var(--ink-soft)}
+  .t-msg{flex:1;min-width:0;overflow-wrap:anywhere}
+  /* nút đóng nhỏ ở góc, hiện khi rê chuột (điện thoại thì vuốt để tắt) */
+  .t-x{position:absolute;top:6px;right:6px;display:grid;place-items:center;width:22px;height:22px;padding:0;border:1px solid var(--rule);border-radius:50%;background:var(--sheet);color:var(--ink-soft);opacity:0;transition:opacity .15s}
+  .t-x svg{width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:2.4;stroke-linecap:round}
+  .toast:hover .t-x,.t-x:focus-visible{opacity:1}
+  .toast:hover .t-msg{padding-right:18px}
+  @media (hover:none){.t-x{display:none}}
   @media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
@@ -348,12 +516,11 @@
     <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
     <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3M7 8l5-5 5 5M5 21h14"/></symbol>
     <symbol id="i-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></symbol>
-    <symbol id="i-camera-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m2 2 20 20M9 4h6l2 3h3a2 2 0 0 1 2 2v9M16 16.5A4 4 0 0 1 9.5 11M2 9v9a2 2 0 0 0 2 2h14"/></symbol>
   </defs>
 </svg>
 
 <header class="topbar">
-  <div class="brand"><img src="icons/icon.svg" alt="">Timesheet</div>
+  <div class="brand"><img src="icons/icon.svg" alt=""><span>Timesheet</span><span class="env" id="envChip" hidden></span></div>
   <nav class="nav" aria-label="Điều hướng">
     <button data-view="kiosk" aria-current="page"><svg><use href="#i-scan"/></svg>Chấm công</button>
     <button data-view="report" data-admin hidden><svg><use href="#i-sheet"/></svg>Bảng công</button>
@@ -367,22 +534,47 @@
     <button class="icon-btn" id="btnLogout" aria-label="Đăng xuất khỏi máy này" title="Đăng xuất khỏi máy này" hidden><svg><use href="#i-logout"/></svg></button>
   </div>
 </header>
+<script>
+  // Dựng sẵn thanh trên từ lần dùng trước (renderPerson lưu ts.who), trước lần vẽ đầu: mã chính của app chạy
+  // sau khi trình duyệt đã vẽ, nếu để nó tự dựng thì chữ Timesheet ẩn và tên hiện lên làm thanh trên xô lệch.
+  try {
+    const w = JSON.parse(localStorage.getItem('ts.who') || 'null');
+    if (w) {
+      document.body.classList.toggle('solo', w.solo);
+      const c = document.getElementById('whoChip'); c.innerHTML = w.html; c.hidden = false;
+      document.getElementById('btnLogout').hidden = false;
+      document.getElementById('netChip').hidden = !w.net;
+    }
+  } catch {}
+</script>
 
 <main>
   <!-- ================= CHẤM CÔNG ================= -->
   <section class="kiosk" id="view-kiosk">
     <div id="stageHome">
-      <div class="stage" id="stage" data-state="loading">
+      <div class="stage" id="stage" data-state="loading" data-msg>
         <video id="video" autoplay playsinline muted></video>
         <canvas id="overlay"></canvas>
-        <div class="guide" aria-hidden="true"><div class="oval"></div></div>
+        <div class="guide" aria-hidden="true"><div class="oval"><svg class="ring" viewBox="-2 -2 79 104"><path d="M37.5 0A37.5 50 0 1 1 37.49 0" pathLength="100"/></svg></div></div>
         <div class="pill" role="status" aria-live="polite"><i></i><span id="pillText">Đang khởi động</span></div>
         <div class="stage-msg" id="stageMsg">
-          <div class="spinner" id="stageSpin"></div>
-          <svg id="stageIcon" hidden><use href="#i-camera-off"/></svg>
-          <b id="stageMsgTitle">Đang tải bộ nhận diện khuôn mặt</b>
-          <p id="stageMsgText">Lần đầu cần tải khoảng 8MB. Từ lần sau, app mở ngay.</p>
-          <button class="btn" id="btnRetryCam" hidden>Mở lại camera</button>
+          <div class="msg-card">
+            <span class="msg-ico" id="stageSpin"><span class="spinner"></span></span>
+            <span class="msg-ico" id="stageIcon" data-badge="error" hidden><svg viewBox="0 0 96 96" aria-hidden="true">
+              <path class="scan" d="M14 30V22a8 8 0 0 1 8-8h8M66 14h8a8 8 0 0 1 8 8v8M82 66v8a8 8 0 0 1-8 8h-8M30 82h-8a8 8 0 0 1-8-8v-8"/>
+              <g class="face"><circle cx="38" cy="42" r="2.5"/><circle cx="58" cy="42" r="2.5"/><path d="M37 58c3 4 7 6 11 6s8-2 11-6"/></g>
+              <g class="badge"><circle cx="76" cy="76" r="15"/>
+                <g class="b-lock"><rect x="69.5" y="74" width="13" height="10" rx="2"/><path d="M72 74v-3a4 4 0 0 1 8 0v3"/></g>
+                <g class="b-missing"><rect x="65.5" y="70.8" width="12.5" height="10.4" rx="2.6"/><path d="M80.8 75.2 85.6 72.5v7l-4.8-2.7z"/><path class="cut" d="M67 67.5l18 17"/><path d="M67 67.5l18 17"/></g>
+                <g class="b-busy"><circle cx="76" cy="76" r="7"/><path d="M76 72v4l2.6 1.6"/></g>
+                <g class="b-error"><path d="M76 69.5v7.5M76 82h.01"/></g>
+              </g>
+            </svg></span>
+            <b id="stageMsgTitle">Đang tải bộ nhận diện khuôn mặt</b>
+            <p id="stageMsgText">Lần đầu cần tải khoảng 8MB. Từ lần sau, app mở ngay.</p>
+            <button class="btn" id="btnRetryCam" hidden>Mở lại camera</button>
+            <p class="msg-detail" id="stageMsgDetail" hidden></p>
+          </div>
         </div>
         <div class="enroll-hud" id="enrollHud" hidden>
           <div class="tip" id="enrollTip">Nhìn thẳng vào camera</div>
@@ -401,7 +593,6 @@
       </section>
 
       <section class="s-punch">
-        <div class="person" id="person"></div>
         <div class="shift-pick" id="shiftPick" hidden>
           <div class="step">1. Chọn ca</div>
           <div class="shift-opts" role="radiogroup" aria-label="Chọn ca làm việc" id="shiftOpts"></div>
@@ -409,10 +600,13 @@
         </div>
         <div class="shift-now" id="shiftNow" hidden></div>
         <div class="note warn sync" id="syncWarn" role="status" hidden><span></span><button type="button" class="link" id="btnSyncRetry">Thử lại</button></div>
-        <button class="punch" id="btnPunch" disabled>
-          <span><span class="pl" id="punchLabel">Check-in</span><div class="ps" id="punchSub">Đứng trước camera để bắt đầu</div></span>
-          <span class="pk">Space</span>
-        </button>
+        <div class="punch-row">
+          <button class="punch" id="btnPunch" disabled>
+            <span><span class="pl" id="punchLabel">Check-in</span><div class="ps" id="punchSub">Đứng trước camera để bắt đầu</div></span>
+            <span class="pk">Space</span>
+          </button>
+          <button type="button" class="auto-cancel" id="btnAutoCancel" hidden>Huỷ</button>
+        </div>
         <div class="geo" id="geoInfo" hidden><svg><use href="#i-pin"/></svg><span></span></div>
       </section>
     </div>
@@ -542,6 +736,7 @@
   <div class="dlg-f">
     <button class="btn quiet danger" id="btnDeleteEmp" hidden>Xoá nhân viên</button>
     <button class="btn quiet" id="btnNewCode" hidden>Tạo mã kích hoạt mới</button>
+    <button class="btn quiet" id="btnRevokeDevices" hidden>Đăng xuất mọi máy</button>
     <span style="flex:1"></span>
     <button class="btn" data-close>Huỷ</button>
     <button class="btn ink" id="btnSaveEmp">Lưu nhân viên</button>
@@ -553,9 +748,16 @@
     <img src="icons/icon.svg" alt="" width="56" height="56" style="border-radius:14px">
     <h2 id="onboardTitle">Kích hoạt Timesheet</h2>
     <p class="soft" style="margin:0 0 18px">Nhập mã kích hoạt quản trị viên gửi cho bạn. Mỗi máy chỉ cần nhập một lần.</p>
-    <input class="input code-input" id="onboardKey" placeholder="VD: K7PM-3QXD" required autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Mã kích hoạt">
+    <div class="code-field">
+      <input class="input code-input" id="onboardKey" placeholder="VD: K7PM3QXD" required autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" inputmode="text" enterkeyhint="go" aria-label="Mã kích hoạt">
+      <button type="button" class="code-clear" id="onboardClear" aria-label="Xoá mã đã nhập" title="Xoá mã" hidden><svg><use href="#i-x"/></svg></button>
+    </div>
     <div id="onboardErr" class="note err" style="margin-top:10px;text-align:left" hidden></div>
-    <button class="btn ink" id="btnActivate" style="width:100%;margin-top:14px;padding:12px">Kích hoạt</button>
+    <label class="opt-row" for="onboardBorrowed">
+      <span class="opt-text"><b>Máy mượn</b><span>Tự đăng xuất ngay sau khi chấm công xong</span></span>
+      <input type="checkbox" class="switch" id="onboardBorrowed" role="switch">
+    </label>
+    <button class="btn ink" id="btnActivate" style="width:100%;margin-top:16px;padding:12px" disabled>Kích hoạt</button>
   </form>
 </dialog>
 
@@ -594,14 +796,32 @@
   </form>
 </dialog>
 
-<div class="toasts" id="toasts" aria-live="polite"></div>
+<!-- Hộp xác nhận dùng chung (thay confirm() của trình duyệt): đăng xuất, xoá nhân viên, tạo mã mới… -->
+<dialog id="confirmDlg" class="confirm" aria-labelledby="confirmTitle" aria-describedby="confirmText">
+  <form method="dialog">
+    <div class="cf-extra" id="confirmExtra" hidden></div>
+    <h2 id="confirmTitle"></h2>
+    <p id="confirmText"></p>
+    <div class="note warn cf-note" id="confirmNote" hidden></div>
+    <div class="cf-actions">
+      <button class="btn" value="cancel" id="confirmCancel" autofocus>Huỷ</button>
+      <button class="btn ink" value="ok" id="confirmOk">Đồng ý</button>
+    </div>
+  </form>
+</dialog>
 
-<script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/dist/face-api.js" crossorigin="anonymous"></script>
+<ol class="toaster" id="toasts" aria-label="Thông báo"></ol>
+
 <script src="face-logic.js"></script>
 <script src="sort.js"></script>
 <script src="shifts.js"></script>
 <script src="import.js"></script>
 <script src="retry.js"></script>
+<script src="guide.js"></script>
+<script src="latest.js"></script>
+<script src="autopunch.js"></script>
+<script src="toast.js"></script>
 <script src="app.js"></script>
+<script type="module" src="vitals.js"></script>
 </body>
 </html>

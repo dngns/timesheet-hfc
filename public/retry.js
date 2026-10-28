@@ -6,9 +6,10 @@
   // status 0 = mất mạng. Mất mạng, server lỗi (5xx), bị giới hạn tần suất (429): giữ lượt, thử lại sau.
   // Lỗi khác (vd 409 đã check-in) là bị từ chối thật: bỏ lượt và báo.
   const isRetryable = status => !status || status >= 500 || status === 429;
-  function describeError(status, msg) {
+  // ref: mã tra cứu server trả về (requestId), chỉ kèm với lỗi máy chủ để quản trị viên tra trong log
+  function describeError(status, msg, ref) {
     if (!status) return 'Không có mạng';
-    if (status >= 500) return 'Server đang lỗi' + (msg ? `: ${msg}` : '');
+    if (status >= 500) return 'Server đang lỗi' + (msg ? `: ${msg}` : '') + (ref ? ` (mã tra cứu: ${ref})` : '');
     return msg || 'Có lỗi xảy ra';
   }
 
